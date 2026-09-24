@@ -1,0 +1,33 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/apk/res/auto"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Left vertical pill bar -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,28 h12 a8,8 0,0 1,8 8 v36 a8,8 0,0 1,-8 8 h-12 a8,8 0,0 1,-8 -8 v-36 a8,8 0,0 1,8 -8 z"/>
+
+    <!-- Right curved bow of D -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,20 c20,0 40,14 40,34 c0,20 -20,34 -40,34 c4,-7 8,-15 8,-24 v-20 c0,-9 -4,-17 -8,-24 z"/>
+
+    <!-- Inner blue triangle play icon with gradient -->
+    <path
+        android:pathData="M42,37 l26,17 l-26,17 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="42"
+                android:startY="37"
+                android:endX="68"
+                android:endY="71">
+                <item android:color="#00D2FF" android:offset="0.0"/>
+                <item android:color="#0052D4" android:offset="1.0"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
