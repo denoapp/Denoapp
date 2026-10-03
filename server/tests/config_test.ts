@@ -27,14 +27,41 @@ Deno.test("loads the documented defaults from only the two credentials", () => {
   assertEquals(settings.b2.objectPrefix, "media");
   assertEquals(settings.b2.presignTtlSeconds, 900);
   assertEquals(settings.b2.maxUploadBytes, 5 * 1024 * 1024);
+  assertEquals(settings.b2.maxChatUploadBytes, 25 * 1024 * 1024);
   assertEquals(settings.port, 8787);
   assertEquals(settings.authRequired, true);
-  assertEquals([...settings.b2.allowedContentTypes], [
+  // The allow-list has to cover every kind a chat attachment can be, or a
+  // working recorder or camera would be rejected at the presign step. The exact
+  // membership is checked below; this only pins that the defaults are not the
+  // old four images.
+  for (const required of [
     "image/jpeg",
     "image/png",
-    "image/webp",
-    "image/heic",
-  ]);
+    "video/mp4",
+    "audio/mp4",
+    "application/pdf",
+    "application/octet-stream",
+  ]) {
+    assertEquals(
+      settings.b2.allowedContentTypes.includes(required),
+      true,
+      `${required} must be allowed by default`,
+    );
+  }
+});
+
+Deno.test("the chat ceiling can be raised but never lowered below the user one", () => {
+  const raised = loadSettings(env({ B2_MAX_CHAT_UPLOAD_BYTES: String(50 * 1024 * 1024) }));
+  assertEquals(raised.b2.maxChatUploadBytes, 50 * 1024 * 1024);
+
+  // A chat ceiling below the profile-media ceiling would reject an upload the
+  // general route already accepts, so the server refuses to start.
+  const error = assertThrows(() =>
+    loadSettings(env({ B2_MAX_CHAT_UPLOAD_BYTES: String(1024 * 1024) }))
+  );
+  assertEquals(error instanceof ConfigError, true);
+  assertMatch((error as Error).message, /B2_MAX_CHAT_UPLOAD_BYTES/);
+  assertEquals((error as Error).message.includes(SECRET), false);
 });
 
 Deno.test("fails closed when B2_KEY_ID is missing, without echoing any secret", () => {
@@ -112,9 +139,16 @@ Deno.test("publicConfigView exposes no credential material", () => {
   const serialized = JSON.stringify(view);
   assertEquals(serialized.includes(SECRET), false);
   assertEquals(serialized.includes(VALID.B2_KEY_ID!), false);
-  assertEquals(view.credentialsPresent, { b2KeyId: true, b2ApplicationKey: true });
+  assertEquals(view.credentialsPresent, {
+    b2KeyId: true,
+    b2ApplicationKey: true,
+    firebaseServiceAccount: false,
+  });
   assertEquals(view.bucket, "deenolink-media");
   assertEquals(view.endpoint, "https://s3.us-east-005.backblazeb2.com");
+  // The chat ceiling is a limit, not a credential, so the client is allowed to
+  // see it and does use it to refuse a too-large attachment before uploading.
+  assertEquals(view.maxChatUploadBytes, 25 * 1024 * 1024);
 });
 
 Deno.test("publicConfigView does not gain a keyId when the dev bypass is on", () => {

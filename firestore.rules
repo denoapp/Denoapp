@@ -1,0 +1,1311 @@
+rules_version = '2';
+
+// DENO production Firestore rules - Phase 1 (identity + profile only).
+// Everything not matched here is denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------------
+    // Moderators.
+    //
+    // The moderator list is the root of trust for every privileged write in this
+    // file, so it is deliberately its own collection rather than a field on
+    // `users/{uid}`: a profile document is written by its owner, so a moderator
+    // flag there would be self-asserted and the whole scheme would collapse into
+    // "call yourself a moderator".
+    //
+    // Seeded out of band (a service account or the Firebase console writes the
+    // first document). From then on it is closed to clients entirely - no client
+    // may create, change or remove a moderator, including adding themselves -
+    // and every member may read the collection so the client can hide moderator
+    // UI from everybody else. Reads expose no more than a list of uids, and the
+    // document carries the role name and the admin who added it.
+    // ---------------------------------------------------------------------
+    match /moderators/{uid} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if false;
+    }
+
+    // Whether the caller is a moderator. Used by every privileged rule below,
+    // and defined here so there is exactly one definition of "is a moderator"
+    // in this file. A signed-out caller is never a moderator.
+    function isModerator() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/moderators/$(request.auth.uid));
+    }
+
+    // Member profile. The document never contains the account email, so a
+    // signed-in member may read a profile; only the owner may write it.
+    match /users/{uid} {
+      allow read: if request.auth != null;
+
+      // The fields a profile owner may write. Listed rather than merely
+      // "authenticated and mine" because an unbounded update lets a client write
+      // ANY field onto its own profile - including `isVerified` or a role - and
+      // then read that back as truth. Verification state lives in
+      // verificationApplications and is moved only by isModerator(), so it cannot
+      // be self-asserted here.
+      function isWritableProfileField() {
+        return request.resource.data.keys().hasOnly([
+              'uid', 'fullName', 'username', 'bio', 'country', 'region',
+              'city', 'language', 'maslak', 'category', 'showMaslak',
+              'showRegion', 'profilePhotoPath', 'profilePhotoUrl',
+              'createdAt', 'updatedAt'
+            ]);
+      }
+
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && isWritableProfileField();
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && resource.data.uid == uid
+        && isWritableProfileField();
+      allow delete: if request.auth != null && request.auth.uid == uid;
+
+      // A moderator writes the approved scholar fields onto the profile. This is
+      // the only write path that may set them, and it is reachable only by a uid
+      // present in the moderators collection - which no client can add itself to.
+      //
+      // Only these fields are writable here, and the moderator may not write them
+      // without recording why: `verifiedBy` has to name the moderator, so an
+      // approved profile always says who approved it.
+      function touchesOnlyScholarVerification() {
+        return request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly([
+                'scholarVerified', 'scholarType', 'verifiedAt', 'verifiedBy'
+              ]);
+      }
+
+      // Granting verification. Written in the same batch as the approved
+      // application record, so the profile badge and the application can never
+      // disagree: one of them exists only if both writes were accepted.
+      allow update: if isModerator()
+        && touchesOnlyScholarVerification()
+        && request.resource.data.scholarVerified == true
+        && request.resource.data.verifiedBy == request.auth.uid
+        && request.resource.data.scholarType is string
+        && request.resource.data.scholarType.size() > 0
+        && request.resource.data.scholarType.size() <= 64
+        && request.resource.data.verifiedAt == request.time;
+
+      // Lifting verification. Rejection has to be able to clear a badge, or a
+      // moderator who rejects a re-applicant would leave the old approval in
+      // place and the profile would still claim to be a verified scholar.
+      //
+      // Only the flag itself moves, and only from a stored grant - so this branch
+      // cannot be used to touch any other part of somebody's profile, and it is
+      // refused against a profile that was never verified in the first place.
+      allow update: if isModerator()
+        && resource.data.scholarVerified == true
+        && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly(['scholarVerified'])
+        && request.resource.data.scholarVerified == false;
+
+      // Push registration for this account.
+      //
+      // A device token is a credential: it lets the holder post a notification
+      // to this account's devices. So the document is readable and writable by
+      // the owner alone, and the only value that may be written into it is a
+      // token. The service account that actually sends bypasses these rules,
+      // which is why nothing else needs to read this collection from a client.
+      match /devices/{deviceId} {
+        // sha256 of the token, hex. Rules cannot recompute a hash, so the
+        // format is bounded and character-checked instead of recomputed: the
+        // exact value is not an authorization input, only the uid is.
+        function isDeviceId() {
+          return deviceId is string
+            && deviceId.size() == 64
+            && deviceId.matches('[0-9a-f]+');
+        }
+
+        function tokenIsWellFormed() {
+          return request.resource.data.token is string
+            && request.resource.data.token.size() > 20
+            && request.resource.data.token.size() <= 4096;
+        }
+
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow create, update: if request.auth != null
+          && request.auth.uid == uid
+          && isDeviceId()
+          && request.resource.data.keys().hasOnly([
+                'token', 'platform', 'deviceId', 'updatedAt'
+              ])
+          && tokenIsWellFormed()
+          && request.resource.data.platform == 'android'
+          && request.resource.data.deviceId is string
+          && request.resource.data.deviceId.size() > 0
+          && request.resource.data.deviceId.size() <= 128;
+        // A token is retired by deleting its own document, which is only ever
+        // reachable for the owner's own registration.
+        allow delete: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // Username reservation. One document per username holding only the owner
+    // uid, so availability can be checked without exposing any profile field.
+    // A name can only be taken if it is still free.
+    match /usernames/{username} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'username'])
+        && !exists(/databases/$(database)/documents/usernames/$(username));
+      allow update, delete: if request.auth != null
+        && resource.data.uid == request.auth.uid;
+    }
+
+    // Phase 1 has no media documents yet. The rule is included now so the
+    // collection is never accidentally world-readable when posts/reels land:
+    // only the owner may write, and only to their own uid.
+    match /media/{uid}/{itemId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ---------------------------------------------------------------------
+    // Collection-group access to read-state documents.
+    //
+    // The signed-in user's read state across every chat is read with ONE
+    // collection-group query (`where(documentId == myUid)`), and a collection
+    // group query is only ever authorized by a `{path=**}` rule - the nested
+    // `match /conversations/{conversationId}/readState/{uid}` rules cover single
+    // document reads and writes but never a query. So this rule grants the read
+    // side of collection-group access, restricted to the two namespaces that
+    // hold read state and to the same recipients the nested rules would allow:
+    // the participants of a 1-to-1 conversation or the members of a group. The
+    // parent document's stored list is the only authorization input. Write side
+    // stays with the nested rules, which validate the field shape and the
+    // timestamps; this rule deliberately grants no writes.
+    match /{path=**}/readState/{uid} {
+      allow read: if path.size() == 2
+        && request.auth != null
+        && ((path[0] == 'conversations'
+             && request.auth.uid in get(
+                  /databases/$(database)/documents/conversations/$(path[1])
+                ).data.participantIds)
+            || (path[0] == 'groups'
+                && request.auth.uid in get(
+                     /databases/$(database)/documents/groups/$(path[1])
+                   ).data.memberIds));
+    }
+
+    // ---------------------------------------------------------------------
+    // Account-wide block list.
+    //
+    // A block lives at `blocks/{ownerUid}/blocked/{peerUid}`. The outer document
+    // id is the owner, which is the whole authorization story: the only account
+    // that may read or write this subtree is the one whose uid is the outer
+    // segment. There is deliberately no wider read. A block is a private act
+    // between two accounts, and letting the blocked user read it would both leak
+    // the list and let them script every block/unblock the owner makes.
+    //
+    // The blocked user finds out the way a real service makes it known: their
+    // messages stop being delivered, which the message create rule below enforces
+    // by refusing a write when the receiver has blocked the sender. Nothing on
+    // this path is readable by anybody but the owner.
+    //
+    // The inner document id is the blocked uid, so blocking somebody twice writes
+    // the same key: there is never a duplicate to reconcile and unblocking is a
+    // plain delete. Nobody can block themselves, and the document carries only
+    // the server's timestamp, so this path cannot be used to store anything else.
+    // ---------------------------------------------------------------------
+    match /blocks/{ownerUid}/blocked/{peerUid} {
+      function isBlockOwner() {
+        return request.auth != null && request.auth.uid == ownerUid;
+      }
+
+      allow read: if isBlockOwner();
+
+      allow create: if isBlockOwner()
+        && peerUid != request.auth.uid
+        && request.resource.data.keys().hasOnly(['blockedAt'])
+        && request.resource.data.blockedAt == request.time;
+
+      // A block is immutable: it is made and lifted, never edited. This is what
+      // keeps the key set equal to the block set.
+      allow update: if false;
+
+      allow delete: if isBlockOwner();
+    }
+
+    // ---------------------------------------------------------------------
+    // 1-to-1 direct messages.
+    //
+    // A conversation document holds the two participant uids and nothing else
+    // that can identify them beyond what the participants already know. The
+    // document id is the deterministic pair id the client derives
+    // (sorted uids joined by "_"), and the rule re-derives it from the stored
+    // participants: a client therefore cannot file a conversation under an id
+    // that does not belong to its own pair, and cannot smuggle in a third uid.
+    //
+    // Authorization is derived from `request.auth.uid` only. A client-supplied
+    // senderId/receiverId is never trusted on its own: the sender must be the
+    // authenticated caller, the receiver must be the *other* stored participant,
+    // and both must already be in the stored participant list.
+    // ---------------------------------------------------------------------
+    match /conversations/{conversationId} {
+      function isParticipant() {
+        return request.auth != null
+          && request.auth.uid in resource.data.participantIds;
+      }
+
+      function newPairIsValid() {
+        return request.resource.data.keys().hasOnly([
+              'participantIds', 'lastMessage', 'lastMessageAt', 'lastSenderId'
+            ])
+          && request.resource.data.participantIds is list
+          && request.resource.data.participantIds.size() == 2
+          && request.auth.uid in request.resource.data.participantIds
+          // Sorted and unique, so the same pair always maps to one id.
+          && request.resource.data.participantIds[0]
+               < request.resource.data.participantIds[1]
+          // The id must be the pair id of the stored participants. This is what
+          // stops an arbitrary conversation id from being used to address a
+          // document the caller is not a participant of.
+          && conversationId == request.resource.data.participantIds[0] + '_'
+               + request.resource.data.participantIds[1];
+      }
+
+      // Readable by the two participants only.
+      allow read: if isParticipant();
+
+      // A conversation is created once, by a participant, with exactly the two
+      // uids in sorted order. Re-creating an existing one is an update, below.
+      allow create: if request.auth != null
+        && request.auth.uid in request.resource.data.participantIds
+        && newPairIsValid();
+
+      // Only the summary fields are mutable, and only by a participant. The
+      // participant list is immutable for the lifetime of the conversation:
+      // changing it would change who can read every message inside it.
+      allow update: if isParticipant()
+        && request.resource.data.participantIds == resource.data.participantIds
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'lastMessage', 'lastMessageAt', 'lastSenderId'
+            ]);
+
+      // A conversation is never deleted; a message is unsent instead, so the
+      // history stays auditable.
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        // Read the participant list from the parent document. The message
+        // document itself carries no authorization data, so a client cannot
+        // widen its own access by writing a permissive field.
+        function isParticipantInConversation() {
+          return request.auth != null
+            && request.auth.uid in get(
+                 /databases/$(database)/documents/conversations/$(conversationId)
+               ).data.participantIds;
+        }
+
+        function existingMessage() {
+          return resource.data;
+        }
+
+        // Who this message is already hidden from. A message that has never been
+        // hidden has no `hiddenFor` field at all, so reading the list off the
+        // stored document is an error rather than an empty list - which is what
+        // used to make the *first* "Delete for me" fail for everybody. Treating
+        // the missing field as empty is the same thing the caller means.
+        function existingHiddenFor() {
+          return ('hiddenFor' in existingMessage())
+            ? existingMessage().hiddenFor
+            : [];
+        }
+
+        // Whether the receiver has blocked the sender. A block is enforced on the
+        // write and not only in the app: this is what makes a block real, because
+        // the blocked user's own device is the thing that would otherwise keep
+        // sending. Reading the receiver's block list costs the sender nothing they
+        // can see - `exists` is true or false and the rule returns nothing else.
+        function receiverHasBlockedSender() {
+          return exists(
+            /databases/$(database)/documents/blocks/$(request.resource.data.receiverId)/blocked/$(request.auth.uid)
+          );
+        }
+
+        // A message may only exist inside a conversation the caller is in.
+        allow read: if isParticipantInConversation();
+
+        allow create: if isParticipantInConversation()
+          // The caller cannot write on somebody else's behalf.
+          && request.resource.data.senderId == request.auth.uid
+          // The receiver is the other stored participant, never the caller and
+          // never an id the client invented.
+          && request.resource.data.receiverId
+               in get(
+                    /databases/$(database)/documents/conversations/$(conversationId)
+                  ).data.participantIds
+          && request.resource.data.receiverId != request.auth.uid
+          // A blocked sender cannot write into the conversation at all, so the
+          // block holds even against a client that was installed before the
+          // block existed or that ignores the UI entirely.
+          && !receiverHasBlockedSender()
+          && request.resource.data.keys().hasOnly([
+                'senderId', 'receiverId', 'text', 'createdAt', 'replyTo',
+                'imageUri', 'audioUri', 'audioDurationMs', 'edited', 'editedAt',
+                'unsent', 'unsentAt', 'hiddenFor',
+                'mediaKey', 'mediaKind', 'mediaContentType', 'mediaFileName',
+                'mediaSizeBytes', 'mediaDurationMs'
+              ])
+          // Unsent/edited flags are server-side state: a client may not create a
+          // message that claims to already be unsent, and may not start life
+          // hidden from either participant.
+          && request.resource.data.unsent == false
+          && request.resource.data.edited == false
+          && (
+            !('hiddenFor' in request.resource.data)
+            || request.resource.data.hiddenFor.size() == 0
+          )
+          && mediaGroupIsComplete()
+          && mediaFieldsAreWellFormed();
+
+        // The media field group. A chat attachment is stored as a server-made
+        // object key, never as a URL, and never as a reference to somebody
+        // else's object: the key's own namespace names the uploader, and that
+        // uploader has to be the sender. So a participant can only ever point a
+        // message at an object this app uploaded on their behalf, and the media
+        // service independently refuses to hand that object to anyone who is not
+        // one of the two uids in the key. Both checks are required, and neither
+        // one is enough on its own.
+        //
+        // The prefix mirrors the server's B2_OBJECT_PREFIX, the same way
+        // storage.rules mirrors the same default.
+        function mediaFieldsAreWellFormed() {
+          return (
+            !('mediaKey' in request.resource.data)
+            || (
+              request.resource.data.mediaKey is string
+              && request.resource.data.mediaKey.matches('media/chats/[^/]+/[^/]+/(photo|video|file|voice)/[^/]+')
+              // Segment 2 is the uploader, because the server always writes the
+              // authenticated uid first. It has to be this message's sender, on
+              // create and on every later write alike: a receiver hiding the
+              // message must not be able to re-point its media at its own
+              // upload at the same time.
+              && request.resource.data.mediaKey.split('/')[2] == request.resource.data.senderId
+              // Segment 3 is the recipient, and it has to be this message's
+              // receiver. Without this a participant could point a message at
+              // an object stored under a third uid: the media service would
+              // then serve it to the sender and to that third uid, neither of
+              // whom is in this conversation. Binding both segments to the two
+              // stored participants is what makes the key and the conversation
+              // the same thing.
+              && request.resource.data.mediaKey.split('/')[3] == request.resource.data.receiverId
+              && request.resource.data.mediaKey.split('/')[2] != request.resource.data.mediaKey.split('/')[3]
+              // Segment 4 is the kind the object was uploaded as, and it has to
+              // be the kind the message claims, so a photo key cannot be
+              // relabelled as a video by editing the field alone.
+              && request.resource.data.mediaKey.split('/')[4] == request.resource.data.mediaKind
+              // Kind and content type have to agree, so "photo" cannot be used
+              // to park a video or an arbitrary document.
+              && (
+                request.resource.data.mediaKind == 'file'
+                || (
+                  request.resource.data.mediaKind == 'photo'
+                  && request.resource.data.mediaContentType.matches('image/.*')
+                )
+                || (
+                  request.resource.data.mediaKind == 'video'
+                  && request.resource.data.mediaContentType.matches('video/.*')
+                )
+                || (
+                  request.resource.data.mediaKind == 'voice'
+                  && request.resource.data.mediaContentType.matches('audio/.*')
+                )
+              )
+              && request.resource.data.mediaContentType.size() > 0
+              && request.resource.data.mediaContentType.size() <= 127
+              && request.resource.data.mediaFileName.size() <= 200
+              && request.resource.data.mediaSizeBytes is number
+              && request.resource.data.mediaSizeBytes > 0
+              && request.resource.data.mediaSizeBytes <= 26214400
+              // A voice note keeps its measured length; nothing else claims one.
+              && (
+                !('mediaDurationMs' in request.resource.data)
+                || (
+                  request.resource.data.mediaDurationMs is number
+                  && request.resource.data.mediaDurationMs >= 0
+                  && request.resource.data.mediaDurationMs <= 600000
+                  && request.resource.data.mediaKind == 'voice'
+                )
+              )
+            )
+          );
+        }
+
+        // Every media field travels together. A lone mediaKey or a lone
+        // mediaKind is a half-written reference and is refused rather than
+        // rendered as a broken attachment.
+        function mediaGroupIsComplete() {
+          return ('mediaKey' in request.resource.data)
+            == ('mediaKind' in request.resource.data)
+            && ('mediaKey' in request.resource.data)
+                 == ('mediaContentType' in request.resource.data)
+            && ('mediaKey' in request.resource.data)
+                 == ('mediaFileName' in request.resource.data)
+            && ('mediaKey' in request.resource.data)
+                 == ('mediaSizeBytes' in request.resource.data);
+        }
+
+        function messageKeysAreKnown() {
+          return request.resource.data.keys().hasOnly([
+                'senderId', 'receiverId', 'text', 'createdAt', 'replyTo',
+                'imageUri', 'audioUri', 'audioDurationMs', 'edited', 'editedAt',
+                'unsent', 'unsentAt', 'hiddenFor',
+                'mediaKey', 'mediaKind', 'mediaContentType', 'mediaFileName',
+                'mediaSizeBytes', 'mediaDurationMs'
+              ]);
+        }
+
+        // Fields that describe the message itself. Neither of the two allowed
+        // mutations below may change these.
+        function addressingIsUnchanged() {
+          return request.resource.data.senderId == existingMessage().senderId
+            && request.resource.data.receiverId
+                 == existingMessage().receiverId;
+        }
+
+        // The sender's own actions: edit the text, or unsend. A receiver has no
+        // permitted mutation here, so nothing in this branch can be used to edit
+        // or rewrite another member's message.
+        function senderMayEditOrUnsend() {
+          return existingMessage().senderId == request.auth.uid
+            && (
+              (request.resource.data.diff(resource.data)
+                    .affectedKeys().hasOnly(['text', 'edited', 'editedAt'])
+                && request.resource.data.edited == true
+                && request.resource.data.text is string
+                && request.resource.data.text.size() > 0
+                && request.resource.data.text.size() <= 4000)
+              ||
+              (request.resource.data.diff(resource.data)
+                    .affectedKeys().hasOnly(['unsent', 'unsentAt'])
+                && request.resource.data.unsent == true)
+            );
+        }
+
+        // "Delete for me" is per participant, so it is a per participant write:
+        // either side of the conversation may hide the message from itself. The
+        // only value a caller may *add* is its own uid, which is what stops a
+        // participant from hiding a message for the other one. A caller can
+        // remove its own entry only; entries belonging to the other participant
+        // are immutable, so one side cannot un-hide the other's history.
+        function callerMayHideForItself() {
+          return request.resource.data.diff(resource.data)
+                .affectedKeys().hasOnly(['hiddenFor'])
+            && (
+              !('hiddenFor' in request.resource.data)
+              || (
+                request.resource.data.hiddenFor is list
+                && request.resource.data.hiddenFor.size() <= 2
+                && request.resource.data.hiddenFor.hasOnly(
+                     existingHiddenFor().concat([request.auth.uid]))
+                && request.resource.data.hiddenFor.hasAll(
+                     existingHiddenFor())
+              )
+            );
+        }
+
+        allow update: if isParticipantInConversation()
+          && messageKeysAreKnown()
+          && addressingIsUnchanged()
+          // Media is immutable once the message exists. An attachment is a
+          // stored object with a real cost, so a message cannot have its
+          // reference swapped afterwards, and a hiddenFor write that also
+          // rewrote media would not be a hide at all.
+          && !request.resource.data.diff(resource.data)
+                 .affectedKeys().hasAny([
+                   'mediaKey', 'mediaKind', 'mediaContentType', 'mediaFileName',
+                   'mediaSizeBytes', 'mediaDurationMs'
+                 ])
+          && mediaGroupIsComplete()
+          && mediaFieldsAreWellFormed()
+          && (senderMayEditOrUnsend() || callerMayHideForItself());
+
+        // Messages are never hard-deleted, so a message cannot be removed from
+        // another member's history. The sender's removal is the `unsent` state
+        // above; a receiver's own removal is the `hiddenFor` entry it writes for
+        // itself, which is invisible to the other participant.
+        allow delete: if false;
+      }
+
+      // -------------------------------------------------------------------
+      // Read state, one document per participant.
+      //
+      // The document id IS the owner uid, which is what makes ownership
+      // enforceable: `request.auth.uid == uid` means a caller can only ever
+      // write its own read position. Nothing here lets one participant mark
+      // another's messages read.
+      //
+      // Read access is wider on purpose. The other participant has to be able to
+      // see this document to render an honest sent/delivered/read state, so
+      // anything that is not a participant in this conversation cannot read it
+      // either.
+      match /readState/{uid} {
+        // The participant list lives on the parent conversation document, so it
+        // is read from there rather than from the message-style local `resource`.
+        function readStateCallerIsParticipant() {
+          return request.auth != null
+            && request.auth.uid in get(
+                 /databases/$(database)/documents/conversations/$(conversationId)
+               ).data.participantIds;
+        }
+
+        function readStateIsWellFormed() {
+          return request.resource.data.keys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+            && (!('lastReadAt' in request.resource.data)
+                || request.resource.data.lastReadAt is timestamp)
+            && (!('lastReadMessageId' in request.resource.data)
+                || (request.resource.data.lastReadMessageId is string
+                    && request.resource.data.lastReadMessageId.size() <= 128))
+            && (!('deliveredAt' in request.resource.data)
+                || request.resource.data.deliveredAt is timestamp)
+            && (!('updatedAt' in request.resource.data)
+                || request.resource.data.updatedAt == request.time);
+        }
+
+        function readStateIsOwnedByCaller() {
+          return request.auth != null && request.auth.uid == uid;
+        }
+
+        allow read: if readStateCallerIsParticipant();
+
+        allow create: if readStateIsOwnedByCaller()
+          && readStateCallerIsParticipant()
+          && readStateIsWellFormed();
+
+        // An update is a read position or a delivery receipt, and nothing else.
+        // The affected-key list is what stops this write path from being used to
+        // park an arbitrary field on the document, and the read/delivery
+        // positions may only move forward: a reported read or delivery is a fact
+        // about the server's clock, so it can never be rewritten into the past.
+        allow update: if readStateIsOwnedByCaller()
+          && readStateCallerIsParticipant()
+          && readStateIsWellFormed()
+          && resource.data.keys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+          && (!('lastReadAt' in request.resource.data)
+              || !('lastReadAt' in resource.data)
+              || request.time >= resource.data.lastReadAt)
+          && (!('deliveredAt' in request.resource.data)
+              || !('deliveredAt' in resource.data)
+              || request.time >= resource.data.deliveredAt);
+
+        allow delete: if false;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Per-account conversation settings (Batch 8).
+    //
+    // `mutedConversations` is read by the push service through the Admin SDK, so
+    // this document is what makes a mute in the app silence the notification.
+    // The document is private to its owner: nobody else may read which
+    // conversations somebody has muted, and a client may only ever write a list
+    // of bounded ids into its own document.
+    //
+    // Pinned messages live under the same owner, one subcollection per
+    // conversation, so a pin is a personal view: it never annotates the shared
+    // message document, and the other participant's history is not the caller's
+    // to modify. The pinned message id is the document id, so pinning the same
+    // message twice is one write and a conversation's pins cannot be filed
+    // under a different conversation's id.
+    // ---------------------------------------------------------------------
+    match /chatSettings/{uid} {
+      function mutedIdsAreWellFormed() {
+        return request.resource.data.mutedConversations is list
+          && request.resource.data.mutedConversations.size() <= 500
+          // `join(',')` renders every element as text before the regex sees it,
+          // so a numeric or boolean entry would sail through the pattern as
+          // "1" or "true". The only field type the pattern admits is string, so
+          // the guard is that the rendered string splits back into exactly the
+          // elements that were written - one non-string makes the two differ.
+          // An empty list has to be allowed separately: it joins to "", which
+          // splits to [""], a list it therefore does not contain.
+          && (
+            request.resource.data.mutedConversations.size() == 0
+            || (
+              request.resource.data.mutedConversations.hasOnly(
+                   request.resource.data.mutedConversations.join(',').split(','))
+              && request.resource.data.mutedConversations.join(',').matches(
+                   '^[a-zA-Z0-9_-]{1,200}(,[a-zA-Z0-9_-]{1,200})*$')
+            )
+          )
+          && (
+            !('updatedAt' in request.resource.data)
+            || request.resource.data.updatedAt == request.time
+          );
+      }
+
+      allow read: if request.auth != null && request.auth.uid == uid;
+
+      // Only the mute list moves. The key list on both writes is what stops this
+      // path from being used to write anything else onto the document.
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['mutedConversations', 'updatedAt'])
+        && mutedIdsAreWellFormed();
+
+      // The existing document may hold no other field yet, and this write may
+      // only replace the mute list: anything else would be a different feature
+      // writing through a rule that was never reviewed for it.
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && resource.data.keys().hasOnly(['mutedConversations', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['mutedConversations', 'updatedAt'])
+        && request.resource.data.diff(resource.data)
+             .affectedKeys().hasOnly(['mutedConversations', 'updatedAt'])
+        && mutedIdsAreWellFormed();
+
+      allow delete: if request.auth != null && request.auth.uid == uid;
+
+      match /pinned/{conversationId}/messages/{messageId} {
+        function pinIsWellFormed() {
+          return request.resource.data.keys().hasOnly([
+                'conversationId', 'messageId', 'text', 'isMine', 'scope', 'pinnedAt'
+              ])
+            // The stored ids have to be the ids of the document being written.
+            // Without this a client could file a pin of one conversation under
+            // another's path, and the pinned list would show a message the
+            // reader is not allowed to see.
+            && request.resource.data.conversationId == conversationId
+            && request.resource.data.messageId == messageId
+            && request.resource.data.scope in ['direct', 'group']
+            && request.resource.data.isMine is bool
+            // A preview, bounded, not the message: a pin cannot be used to park
+            // an arbitrary payload on the account's document.
+            && request.resource.data.text is string
+            && request.resource.data.text.size() <= 4000
+            // The server's clock, so a pin cannot be backdated to look older
+            // than the conversation it belongs to.
+            && request.resource.data.pinnedAt == request.time;
+        }
+
+        allow read: if request.auth != null && request.auth.uid == uid;
+
+        // Pins are created and removed, never rewritten: there is no update path,
+        // so what a user pinned cannot be edited into something else later.
+        allow create: if request.auth != null
+          && request.auth.uid == uid
+          && pinIsWellFormed();
+
+        allow update: if false;
+
+        // Unpinning is deleting this user's own pin document.
+        allow delete: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // Scholar verification applications.
+    //
+    // One document per applicant, at `verificationApplications/{uid}` - the
+    // applicant's own uid as the document id. That key choice does the duplicate
+    // prevention in the rules rather than in the client: a second application
+    // would be an update to a document that already exists, and there is no
+    // update path for an applicant. "No duplicates" is therefore enforced by the
+    // server, not by the app remembering to check.
+    //
+    // Source of truth for the whole feature:
+    // - This document is the record of what was applied for and what was decided.
+    //   It is private to its owner and to moderators.
+    // - `users/{uid}.scholarVerified` is the public face of a decision, and it is
+    //   what Ask a Masla lists. A moderator writes it in the SAME batch as the
+    //   status change, so the two can never disagree: either both landed or
+    //   neither did. The profile carries no private application data, so it is
+    //   safe for the list to read.
+    // - A client can write a PENDING application and nothing else. It cannot
+    //   approve itself, cannot edit an existing application, cannot delete one,
+    //   and cannot touch anybody else's.
+    // ---------------------------------------------------------------------
+    match /verificationApplications/{uid} {
+      function isWellFormedText(value, limit) {
+        return value is string && value.size() <= limit;
+      }
+
+      // Every field an application may carry. An unknown field is refused, so
+      // this document cannot be used as general storage.
+      function applicationKeysAreKnown() {
+        return request.resource.data.keys().hasOnly([
+              'uid', 'fullName', 'username', 'country', 'region', 'city',
+              'scholarType', 'expertise', 'institution', 'qualification',
+              'specialization', 'educationYears', 'experienceYears',
+              'introduction', 'email', 'phone', 'certificateName',
+              'certificateUri', 'supportingName', 'supportingUri',
+              'status', 'submittedAt', 'reviewedAt', 'reviewedBy',
+              'reviewNote'
+            ]);
+      }
+
+      // The read side. Both read paths are closed to ordinary members, because an
+      // application carries an email address, a phone number and the URIs of the
+      // documents the applicant uploaded. None of that may be readable by the
+      // public, so a single document read answers "is this my application, and
+      // what was decided" - the applicant or a moderator - and nothing else.
+      allow get: if request.auth != null
+        && (request.auth.uid == uid || isModerator());
+
+      // A query is closed as well.
+      //
+      // An earlier version allowed a member to list `status == 'approved'` so Ask a
+      // Masla could read the public scholar list out of it. That was wrong: the
+      // rules cannot filter fields out of a query, so every approved document was
+      // handed to every signed-in member in full, including the applicant's email,
+      // phone number, certificate URI and supporting-document URI. The comment here
+      // used to claim approved rows carried "a name, a type and a location, and
+      // nothing else about them", which was simply untrue of the stored document.
+      //
+      // The public scholar list is served from `users/{uid}.scholarVerified` instead,
+      // which carries no private fields and whose flag only a moderator may move. The
+      // mirror is written in the same batch as the status change above, so the two
+      // can never disagree about whether somebody is a scholar.
+      allow list: if isModerator();
+
+      // Submitting. The applicant is the authenticated caller, the status starts
+      // PENDING and the review fields are absent: a client cannot arrive with a
+      // pre-approved application, and the server's clock is the only accepted
+      // submission time, so an application cannot be backdated.
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && applicantSubmissionIsValid();
+
+      // Every applicant write, whether it is the first submission or a re-
+      // application, has to clear the same bar: a complete, bounded, PENDING
+      // application with no review fields on it and the server's clock as the
+      // submission time. Factored out so a re-application cannot be a weaker
+      // version of a first application.
+      function applicantSubmissionIsValid() {
+        return request.resource.data.uid == uid
+          && request.resource.data.status == 'pending'
+          && !('reviewedAt' in request.resource.data)
+          && !('reviewedBy' in request.resource.data)
+          && !('reviewNote' in request.resource.data)
+          && request.resource.data.submittedAt == request.time
+          && applicationKeysAreKnown()
+          && isWellFormedText(request.resource.data.fullName, 120)
+          && request.resource.data.fullName.size() > 0
+          && isWellFormedText(request.resource.data.username, 30)
+          && isWellFormedText(request.resource.data.email, 200)
+          && request.resource.data.email.size() > 0
+          && isWellFormedText(request.resource.data.scholarType, 64)
+          && request.resource.data.scholarType.size() > 0
+          // Every free-text field is bounded, so one application cannot be made
+          // arbitrarily large.
+          && isWellFormedText(request.resource.data.country, 80)
+          && isWellFormedText(request.resource.data.region, 80)
+          && isWellFormedText(request.resource.data.city, 80)
+          && isWellFormedText(request.resource.data.expertise, 200)
+          && isWellFormedText(request.resource.data.institution, 160)
+          && isWellFormedText(request.resource.data.qualification, 160)
+          && isWellFormedText(request.resource.data.specialization, 200)
+          && isWellFormedText(request.resource.data.educationYears, 40)
+          && isWellFormedText(request.resource.data.experienceYears, 40)
+          && isWellFormedText(request.resource.data.introduction, 2000)
+          && isWellFormedText(request.resource.data.phone, 40)
+          && isWellFormedText(request.resource.data.certificateName, 200)
+          && isWellFormedText(request.resource.data.certificateUri, 400)
+          && isWellFormedText(request.resource.data.supportingName, 200)
+          && isWellFormedText(request.resource.data.supportingUri, 400);
+      }
+
+      // An application cannot be deleted. Deleting is how somebody would erase the
+      // fact that they applied at all, and the record is the moderator's evidence
+      // that a review happened, so there is no path that removes one - not for the
+      // applicant, and not for a moderator either.
+      allow delete: if false;
+
+      // Applying again after a rejection.
+      //
+      // One document per applicant means a re-application is an update to the same
+      // document, and there is a question worth answering: does allowing that write
+      // give the applicant any power they did not have?
+      //
+      // It does not. The only state this branch is reachable from is REJECTED - a
+      // decision somebody else made, and a state in which the applicant has nothing
+      // left to lose. The only state it can move to is PENDING, so the write cannot
+      // reach VERIFIED and the applicant still cannot decide anything about
+      // themselves. The previous decision is overwritten rather than hidden, which
+      // is the honest outcome: this document is the applicant's current application,
+      // and its status is the current answer.
+      //
+      // While an application is PENDING there is no applicant update at all, so a
+      // pending application cannot be edited after submission - not its answers and
+      // not its status. A moderator decides on the document that was actually
+      // submitted.
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && resource.data.status == 'rejected'
+        && applicantSubmissionIsValid();
+
+      // Moderation. A moderator moves a PENDING application to approved or
+      // rejected, and may change nothing else about it: the answers the applicant
+      // gave are immutable even to the reviewer.
+      //
+      // The transition itself is constrained - only from PENDING, and only to
+      // those two values - so an already-reviewed application cannot be silently
+      // re-decided, and `reviewedBy` has to be the moderator actually making the
+      // call, never a value copied from somewhere else.
+      allow update: if isModerator()
+        && resource.data.status == 'pending'
+        && resource.data.uid == uid
+        && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly([
+                'status', 'reviewedAt', 'reviewedBy', 'reviewNote'
+              ])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time
+        && isWellFormedText(request.resource.data.reviewNote, 500);
+    }
+
+    // ---------------------------------------------------------------------
+    // Reports.
+    //
+    // One immutable document per report, and it can only be created. There is no
+    // update and no delete, so a report cannot be edited or withdrawn after the
+    // fact, and only the reporter may read it back: a report names a person, so
+    // it is not something another member of the app may browse.
+    // ---------------------------------------------------------------------
+    match /reports/{reportId} {
+      allow create: if request.auth != null
+        // The reporter is the authenticated caller. Nothing else in the document
+        // is trusted to identify who is reporting.
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+              'reporterUid', 'targetType', 'targetId', 'targetName', 'messageId',
+              'reason', 'createdAt'
+            ])
+        && request.resource.data.targetType in ['direct', 'group']
+        && request.resource.data.targetId is string
+        && request.resource.data.targetId.size() > 0
+        && request.resource.data.targetId.size() <= 128
+        && request.resource.data.targetName is string
+        && request.resource.data.targetName.size() <= 200
+        && request.resource.data.messageId is string
+        && request.resource.data.messageId.size() <= 128
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 200
+        // The server's clock, so a report cannot claim to have been made earlier
+        // than it was.
+        && request.resource.data.createdAt == request.time;
+
+      allow read: if request.auth != null
+        && resource.data.reporterUid == request.auth.uid;
+
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Group chat.
+    //
+    // A group document holds the creator, the member list, the admin list and
+    // the metadata the list screen renders; its messages live in a
+    // subcollection. Authorization is derived from the stored lists and
+    // `request.auth.uid` only: a client-supplied member id is never trusted on
+    // its own. Every list is read with get() rather than from `resource.data`,
+    // so create and update are judged by exactly the same stored facts, and a
+    // client cannot widen its own access by writing a permissive field.
+    //
+    // `memberCount` is written once, at creation, and the rule requires it to
+    // equal the size of the member list being created. No later write may touch
+    // it, so a client cannot inflate the number a group shows. The app renders
+    // the count derived from `memberIds`, which is the only list an allowed
+    // membership change is able to move, so the two cannot drift apart.
+    // ---------------------------------------------------------------------
+    match /groups/{groupId} {
+      function groupData() {
+        return get(/databases/$(database)/documents/groups/$(groupId)).data;
+      }
+
+      // Membership is read from `resource.data`, not from `groupData()`.
+      //
+      // `groupData()` is a `get()` on this same document through the `{groupId}`
+      // wildcard, which rules cannot evaluate when the read is a collection
+      // query: the wildcard is unresolved, so the condition cannot be proven and
+      // the entire query is denied for every caller. `resource.data` is the
+      // document the rule is already scoped to, so the same membership test is
+      // provable for a query and for a single `get()`.
+      function isGroupMember() {
+        return request.auth != null
+          && request.auth.uid in resource.data.memberIds;
+      }
+
+      function isGroupCreator() {
+        return request.auth != null && groupData().creatorId == request.auth.uid;
+      }
+
+      function isGroupAdmin() {
+        return isGroupCreator()
+          || (request.auth != null && request.auth.uid in groupData().adminIds);
+      }
+
+      // Why there is no "every member is a real account" rule here any more.
+      //
+      // It used to read
+      //     ids.every(uid, uid is string
+      //          && exists(/databases/$(database)/documents/users/$(uid)))
+      // and that is not a Firestore Rules expression. Rules have no list
+      // iteration and no `every`, so the compiler flagged it and the runtime
+      // raised "Function not found error: Name: [every]" - which denies. Not a
+      // warning about an optional check: the whole branch failed, so every
+      // group create and every membership write was refused for every caller.
+      //
+      // A rule can ask "does this one id exist?" but it cannot ask that once per
+      // element of a list, and the check cannot be weakened to a shape test: a
+      // list of well-formed strings is exactly what an attacker writes when they
+      // invent a member. `memberIds.size() > 0` would stop nobody.
+      //
+      // So the check moved to the service, which holds a service account and can
+      // read `users/{uid}` once per id. The rules and the service are two halves
+      // of one decision:
+      //   - `allow create` below is `if false`. A group document may only be
+      //     created by the service, because a client create is the one write
+      //     that names the whole member list at once.
+      //   - No client write may add to `memberIds` or `adminIds`. Removing,
+      //     leaving and promoting are still allowed, because none of them can
+      //     introduce an id that was not already checked: they only ever take
+      //     names out of the list, or move a name that is already in it.
+      // A client therefore cannot reach the one place a fabricated uid could be
+      // admitted, and the service refuses there what the rules cannot.
+
+      function groupKeysAreKnown() {
+        return request.resource.data.keys().hasOnly([
+              'creatorId', 'memberIds', 'adminIds', 'memberCount', 'name',
+              'description', 'topic', 'initial', 'membersCanSend',
+              'membersCanAddParticipants', 'createdAt', 'lastMessage',
+              'lastMessageAt', 'updatedAt'
+            ]);
+      }
+
+      // The identity of a group is fixed once it exists: who made it, how many
+      // members it has, and when it was made. None of these move on any later
+      // write, so every branch below can reason about a stable creator and a
+      // stable count, and the counter can never be inflated by a later write.
+      function identityIsUnchanged() {
+        return request.resource.data.creatorId == resource.data.creatorId
+          && request.resource.data.memberCount == resource.data.memberCount
+          && request.resource.data.createdAt == resource.data.createdAt;
+      }
+
+      // Any member may write the group preview of a message they posted. The
+      // preview carries no authorization data, and the affected-keys list keeps
+      // this branch to exactly those three fields, so it cannot be used to
+      // smuggle a change into any other one.
+      function memberMayRefreshSummary() {
+        return isGroupMember()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'lastMessage', 'lastMessageAt', 'updatedAt'
+              ]);
+      }
+
+      // Leaving is no longer a permitted client write, and the branch that used
+      // to allow it has been removed rather than tightened.
+      //
+      // It was a per member write that dropped the caller's own uid from both
+      // lists; nothing else in either list moved, so it was never a way to evict
+      // anybody. It is gone because of `memberCount`, not because of who it
+      // touched. The count is the group's own record of how many people are in
+      // it, and no client may write that field - which is the point, because it
+      // is the one number the group list shows. A direct leave moved `memberIds`
+      // without it, so the stored count and the list disagreed, and nothing a
+      // client was allowed to write could ever put them back together.
+      //
+      // Leaving is now the service's `members/remove` call carrying the caller's
+      // own uid, which recomputes the count in the same write and refuses the
+      // creator on the same terms this branch used to.
+
+      // Admin actions that can only take names OUT of the member list: removing
+      // somebody, and promoting an existing member.
+      //
+      // `hasAll` is the whole safety argument, and the direction is what matters:
+      // `stored.hasAll(new)` reads "everything the new list has was already in
+      // the stored one", so the new list is a SUBSET and this branch can only
+      // shrink `memberIds`. Written the other way round it would permit exactly
+      // the opposite - an admin adding any id they liked, including one they
+      // invented - which is the hole this whole migration closes.
+      //
+      // The creator stays a member and an admin, an admin is always a member, and
+      // the creator cannot be dropped: the subset keeps whoever was stored, and
+      // the two `in` tests keep the creator on both lists. The branch is
+      // admin-only, so a plain member has no permitted mutation of the member
+      // list at all, and a non-member is refused by every branch.
+      function adminMayChangeMembers() {
+        return isGroupAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'memberIds', 'adminIds', 'updatedAt'
+              ])
+          // May only remove, never add: see above.
+          && resource.data.memberIds.hasAll(request.resource.data.memberIds)
+          && groupData().creatorId in request.resource.data.memberIds
+          && groupData().creatorId in request.resource.data.adminIds
+          // An admin that is not a member could keep administering a group they
+          // were removed from, so an admin entry may only be dropped, never
+          // invented.
+          && resource.data.adminIds.hasAll(request.resource.data.adminIds)
+          && request.resource.data.adminIds
+               .removeAll(request.resource.data.memberIds).size() == 0;
+      }
+
+      // Promoting an existing member to admin is the one membership-adjacent
+      // change that adds to `adminIds` instead of subtracting from it, so it
+      // cannot live in the shrink-only branch above. It gets its own branch
+      // because that branch's `hasAll` directions are exactly what forbid it.
+      //
+      // The safety here does not come from a direction on `adminIds` but from
+      // `memberIds` being held equal to what was stored: this branch cannot
+      // add, remove or reorder anybody's membership, so no admin can name
+      // themselves a member of a larger group. An admin must already be a
+      // member, every admin entry must still be a member, and the creator stays
+      // an admin so a group can never be left with an admin-less head.
+      function adminMayChangeAdminList() {
+        return isGroupAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'adminIds', 'updatedAt'
+              ])
+          && request.resource.data.memberIds == resource.data.memberIds
+          && groupData().creatorId in request.resource.data.adminIds
+          && request.resource.data.adminIds
+               .removeAll(request.resource.data.memberIds).size() == 0;
+      }
+
+      // Creator/admin metadata and the two permission switches. memberCount,
+      // creatorId and memberIds are not in the list, so this branch cannot be
+      // used to move a membership or a count.
+      function adminMayChangeSettings() {
+        return isGroupAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'name', 'description', 'topic', 'initial', 'membersCanSend',
+                'membersCanAddParticipants', 'updatedAt'
+              ]);
+      }
+
+      // Readable by members only. A non-member cannot discover a group, let
+      // alone its history, so the existence of a group is not something the
+      // whole database can enumerate. Joining is therefore an admin action
+      // (addMembers below), not a self-service write.
+      allow read: if isGroupMember();
+
+      // A group document is created by the service, never by a client.
+      //
+      // Creating a group is the single write that names the entire member list
+      // at once, so it is the single write that needs the real-account check the
+      // rules cannot express. The service makes that check with its service
+      // account, derives `creatorId`, `adminIds` and `memberCount` itself, and
+      // mints the document id. Its writes use the service account and so bypass
+      // these rules entirely - which is exactly why this line is closed: a
+      // client with a valid ID token must not be able to skip the service and
+      // file a member list of its own inventing.
+      //
+      // Closing this does not weaken anything. The rule it replaces was already
+      // refusing every create, because `membersAreRealAccounts` raised
+      // "Function not found error"; the group could not be created at all. The
+      // service performs the same create, and checks what the rule could not.
+      allow create: if false;
+
+      // Exactly one of the four permitted mutations, and the group's identity
+      // fields untouched in all of them. No branch can add to `memberIds`, drop
+      // a uid from it, or move the count: every membership change is the
+      // service's, which is what keeps `memberCount` and `memberIds` equal.
+      allow update: if identityIsUnchanged()
+        && groupKeysAreKnown()
+        && (
+          memberMayRefreshSummary()
+          || adminMayChangeMembers()
+          || adminMayChangeAdminList()
+          || adminMayChangeSettings()
+        );
+
+      // The Delete Group row the info screen already offers: creator or admin.
+      // The messages inside are not readable afterwards, because the read rule
+      // above is the membership list of a document that no longer exists.
+      allow delete: if isGroupAdmin();
+
+      match /messages/{messageId} {
+        function isGroupMessageMember() {
+          return request.auth != null
+            && request.auth.uid in groupData().memberIds;
+        }
+
+        // Who this message is already hidden from. A message that has never been
+        // hidden has no `hiddenFor` field at all, so reading the list off the
+        // stored document is an error rather than an empty list - which is what
+        // used to make the *first* "Delete for me" fail in a group too.
+        function existingHiddenFor() {
+          return ('hiddenFor' in resource.data) ? resource.data.hiddenFor : [];
+        }
+
+        function groupMessageKeysAreKnown() {
+          return request.resource.data.keys().hasOnly([
+                'senderId', 'text', 'replyTo', 'imageUri', 'audioUri',
+                'audioDurationMs', 'edited', 'editedAt', 'unsent', 'unsentAt',
+                'hiddenFor', 'createdAt'
+              ]);
+        }
+
+        // What the message *is*: who sent it, when, and what it quoted. Neither
+        // of the two allowed mutations below may change these, so an edit or a
+        // hide cannot rewrite a message into somebody else's.
+        function groupAddressingIsUnchanged() {
+          return request.resource.data.senderId == resource.data.senderId
+            && request.resource.data.createdAt == resource.data.createdAt
+            && request.resource.data.replyTo == resource.data.replyTo
+            // A group attachment is not stored, so these stay empty and stay
+            // that way: no later write can park an unreadable reference in a
+            // group's history.
+            && request.resource.data.imageUri == resource.data.imageUri
+            && request.resource.data.audioUri == resource.data.audioUri
+            && request.resource.data.audioDurationMs
+                 == resource.data.audioDurationMs;
+        }
+
+        // The author's own actions, plus an admin's. A member who is neither
+        // has no permitted mutation here, so nothing in this branch can edit or
+        // rewrite another member's message.
+        function authorOrAdminMayEditOrUnsend() {
+          return (resource.data.senderId == request.auth.uid || isGroupAdmin())
+            && (
+              (request.resource.data.diff(resource.data)
+                    .affectedKeys().hasOnly(['text', 'edited', 'editedAt'])
+               && request.resource.data.edited == true
+               && request.resource.data.text is string
+               && request.resource.data.text.size() > 0
+               && request.resource.data.text.size() <= 4000)
+              ||
+              (request.resource.data.diff(resource.data)
+                    .affectedKeys().hasOnly(['unsent', 'unsentAt'])
+               && request.resource.data.unsent == true)
+            );
+        }
+
+        // "Delete for me" is per member, so it is a per member write: the only
+        // value a caller may *add* is its own uid, which is what stops a member
+        // from hiding a message for anybody else. Entries belonging to other
+        // members are immutable, so one member cannot un-hide another's history.
+        function callerMayHideForItself() {
+          return request.resource.data.diff(resource.data)
+                .affectedKeys().hasOnly(['hiddenFor'])
+            && (
+              !('hiddenFor' in request.resource.data)
+              || (
+                request.resource.data.hiddenFor is list
+                && request.resource.data.hiddenFor.hasOnly(
+                     existingHiddenFor().concat([request.auth.uid]))
+                && request.resource.data.hiddenFor.hasAll(existingHiddenFor())
+              )
+            );
+        }
+
+        // Read the member list from the parent document. The message itself
+        // carries no authorization data, so a client cannot widen its own
+        // access by writing a permissive field onto a message.
+        allow read: if isGroupMessageMember();
+
+        // Only a member may post, only as themselves, and only while the group
+        // allows it. A group that has closed its composer to plain members is a
+        // server-side fact here, not a switch the UI merely remembers.
+        allow create: if isGroupMessageMember()
+          && (isGroupAdmin() || groupData().membersCanSend == true)
+          && groupMessageKeysAreKnown()
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 4000
+          && request.resource.data.replyTo is string
+          && request.resource.data.replyTo.size() <= 4000
+          && request.resource.data.imageUri == ''
+          && request.resource.data.audioUri == ''
+          && request.resource.data.audioDurationMs == 0
+          // Unsent/edited flags and the hiddenFor list are server-side state: a
+          // client may not create a message that claims to be already unsent or
+          // that starts life hidden from the group.
+          && request.resource.data.edited == false
+          && request.resource.data.unsent == false
+          && (
+            !('hiddenFor' in request.resource.data)
+            || request.resource.data.hiddenFor.size() == 0
+          )
+          // The clock is the server's, so a message cannot be backdated into a
+          // history or used to push the group list's order around.
+          && request.resource.data.createdAt == request.time;
+
+        allow update: if isGroupMessageMember()
+          && groupMessageKeysAreKnown()
+          && groupAddressingIsUnchanged()
+          && (authorOrAdminMayEditOrUnsend() || callerMayHideForItself());
+
+        // Messages are never hard-deleted, so a member cannot remove a message
+        // from another member's history. The author's removal is the `unsent`
+        // state above; a reader's own removal is the `hiddenFor` entry it writes
+        // for itself, which is invisible to everybody else.
+        allow delete: if false;
+      }
+
+      // -------------------------------------------------------------------
+      // Per-member read state for a group.
+      //
+      // Same shape and same ownership rule as the 1-to-1 case: the document id is
+      // the member uid, so a member can only ever write its own read position and
+      // can never mark somebody else's messages read. Read access goes to the
+      // group members, which is what lets a sender show an honest "read by N"
+      // instead of guessing.
+      match /readState/{uid} {
+        function groupReadStateCallerIsMember() {
+          return request.auth != null
+            && request.auth.uid in groupData().memberIds;
+        }
+
+        function groupReadStateIsWellFormed() {
+          return request.resource.data.keys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+            && (!('lastReadAt' in request.resource.data)
+                || request.resource.data.lastReadAt is timestamp)
+            && (!('lastReadMessageId' in request.resource.data)
+                || (request.resource.data.lastReadMessageId is string
+                    && request.resource.data.lastReadMessageId.size() <= 128))
+            && (!('deliveredAt' in request.resource.data)
+                || request.resource.data.deliveredAt is timestamp)
+            && (!('updatedAt' in request.resource.data)
+                || request.resource.data.updatedAt == request.time);
+        }
+
+        allow read: if groupReadStateCallerIsMember();
+
+        allow create: if request.auth != null
+          && request.auth.uid == uid
+          && groupReadStateCallerIsMember()
+          && groupReadStateIsWellFormed();
+
+        allow update: if request.auth != null
+          && request.auth.uid == uid
+          && groupReadStateCallerIsMember()
+          && groupReadStateIsWellFormed()
+          && resource.data.keys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'lastReadAt', 'lastReadMessageId', 'deliveredAt', 'updatedAt'
+              ])
+          && (!('lastReadAt' in request.resource.data)
+              || !('lastReadAt' in resource.data)
+              || request.time >= resource.data.lastReadAt)
+          && (!('deliveredAt' in request.resource.data)
+              || !('deliveredAt' in resource.data)
+              || request.time >= resource.data.deliveredAt);
+
+        allow delete: if false;
+      }
+    }
+  }
+}

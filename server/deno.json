@@ -5,9 +5,8 @@
   "type": "module",
   "exports": "./src/main.ts",
   "tasks": {
-    "start": "deno run --env-file=.env --allow-env --allow-net=0.0.0.0:8787,www.googleapis.com,s3.us-east-005.backblazeb2.com src/main.ts",
-    "dev": "deno run --watch --env-file=.env --allow-env --allow-net=0.0.0.0:8787,www.googleapis.com,s3.us-east-005.backblazeb2.com src/main.ts",
-    "check": "deno check src/main.ts src/config.ts src/sigv4.ts src/b2.ts src/auth.ts",
+    "start": "deno run --env-file=.env --allow-env --allow-net=0.0.0.0:8787,www.googleapis.com,oauth2.googleapis.com,firestore.googleapis.com,fcm.googleapis.com,s3.us-east-005.backblazeb2.com src/main.ts",
+    "dev": "deno run --watch --env-file=.env --allow-env --allow-net=0.0.0.0:8787,www.googleapis.com,oauth2.googleapis.com,firestore.googleapis.com,fcm.googleapis.com,s3.us-east-005.backblazeb2.com src/main.ts",    "check": "deno check src/main.ts src/config.ts src/sigv4.ts src/b2.ts src/auth.ts src/push.ts src/groups.ts",
     "test": "deno test --allow-env",
     "fmt": "deno fmt",
     "lint": "deno lint"
@@ -25,5 +24,28 @@
       "tags": ["recommended"]
     }
   },
-  "exclude": [".env", ".env.*"]
+  "exclude": [".env", ".env.*"],
+"deploy": {
+    "org": "denoapp",
+    "runtime": {
+      "type": "dynamic",
+      "entrypoint": "src/main.ts"
+    },
+    "app": "deenolink-staging-b12k"
+  }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

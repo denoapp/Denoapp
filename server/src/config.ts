@@ -25,9 +25,46 @@ export interface B2Settings {
   readonly region: string;
   readonly presignTtlSeconds: number;
   readonly maxUploadBytes: number;
+  /**
+   * Chat attachments are a separate ceiling from profile media: a voice note or
+   * a short video is legitimately larger than a 5 MB avatar, and the per-kind
+   * rules in b2.ts bound the kind rather than the namespace.
+   */
+  readonly maxChatUploadBytes: number;
   readonly allowedContentTypes: readonly string[];
   /** All object keys are written beneath this prefix. */
   readonly objectPrefix: string;
+}
+
+export interface PushSettings {
+  /**
+   * Off unless the operator turns it on. A server with no service account
+   * refuses to send rather than reporting a delivery that never happened.
+   */
+  readonly enabled: boolean;
+  /** Raw service-account JSON. Read from the environment, never logged. */
+  readonly serviceAccountJson: string;
+  /** Present and parseable, reported as a boolean in the health view. */
+  readonly serviceAccountPresent: boolean;
+}
+
+/**
+ * Group creation and membership changes.
+ *
+ * These are on the service because `firestore.rules` cannot check that every id
+ * in a member list names a real account - it has no list iteration, so the check
+ * it used to express always failed closed and refused every group write. The
+ * service account is what lets the server read `users/{uid}` once per id.
+ *
+ * Off unless the operator turns it on, and a hard startup error when it is on
+ * without a service account, for the same reason push is: a server that cannot
+ * check membership must refuse to change it rather than accept an unverified
+ * member list.
+ */
+export interface GroupsConfig {
+  readonly enabled: boolean;
+  readonly serviceAccountJson: string;
+  readonly serviceAccountPresent: boolean;
 }
 
 export interface ServerSettings {
@@ -40,6 +77,8 @@ export interface ServerSettings {
   readonly devUid: string;
   readonly corsAllowedOrigins: readonly string[];
   readonly b2: B2Settings;
+  readonly push: PushSettings;
+  readonly groups: GroupsConfig;
 }
 
 const DEFAULT_BUCKET = "deenolink-media";
@@ -48,15 +87,52 @@ const DEFAULT_OBJECT_PREFIX = "media";
 const DEFAULT_PORT = 8787;
 /** Matches the 5 MiB image ceiling already enforced in storage.rules. */
 const DEFAULT_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+/** Chat media ceiling. Bounded by a streaming upload, not by memory. */
+const DEFAULT_MAX_CHAT_UPLOAD_BYTES = 25 * 1024 * 1024;
 const DEFAULT_PRESIGN_TTL_SECONDS = 900;
 /** AWS SigV4 / S3 hard limit for X-Amz-Expires. */
 export const MAX_PRESIGN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 const DEFAULT_CONTENT_TYPES = [
+  // Images (profile photos, chat photos, camera captures).
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/heic",
+  "image/heif",
+  "image/gif",
+  "image/bmp",
+  // Video.
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/3gpp",
+  "video/x-matroska",
+  // Voice notes. MediaRecorder writes AAC in an MP4 container, which is
+  // audio/mp4, so it is the one that has to be allowed for a recording to work.
+  "audio/mp4",
+  "audio/aac",
+  "audio/ogg",
+  "audio/webm",
+  "audio/mpeg",
+  "audio/3gpp",
+  "audio/amr",
+  "audio/wav",
+  "audio/x-wav",
+  // Files chosen from a document chooser.
+  "application/pdf",
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/json",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/octet-stream",
+  "text/plain",
+  "text/csv",
 ] as const;
 
 /**
@@ -270,6 +346,18 @@ export function loadSettings(env: EnvSource): ServerSettings {
     listSetting(env, "B2_ALLOWED_CONTENT_TYPES", DEFAULT_CONTENT_TYPES),
   );
 
+  const maxChatUploadBytes = intSetting(
+    env,
+    "B2_MAX_CHAT_UPLOAD_BYTES",
+    DEFAULT_MAX_CHAT_UPLOAD_BYTES,
+    { min: 1024, max: 5 * 1024 * 1024 * 1024 },
+  );
+  if (maxChatUploadBytes < maxUploadBytes) {
+    throw new ConfigError(
+      "B2_MAX_CHAT_UPLOAD_BYTES cannot be smaller than B2_MAX_UPLOAD_BYTES.",
+    );
+  }
+
   // A signed request is meaningless without knowing which Firebase project the
   // caller's ID token belongs to, so this is required rather than defaulted.
   const firebaseProjectId = requireSecret(env, "FIREBASE_PROJECT_ID");
@@ -302,6 +390,31 @@ export function loadSettings(env: EnvSource): ServerSettings {
     origins.split(",").map((o) => o.trim()).filter((o) => o !== ""),
   );
 
+  // Push is opt-in. Turning it on without a credential is a misconfiguration
+  // that must fail at startup rather than at the first message, because the
+  // alternative is a server that quietly drops every notification. The JSON is
+  // parsed once, by createPushService, which is also where a malformed key is
+  // reported as a configuration error.
+  const pushEnabled = boolSetting(env, "PUSH_ENABLED", false);
+  const serviceAccountJson = readString(env, "FIREBASE_SERVICE_ACCOUNT_JSON") ?? "";
+  if (pushEnabled && serviceAccountJson === "") {
+    throw new ConfigError(
+      "PUSH_ENABLED is on but FIREBASE_SERVICE_ACCOUNT_JSON is missing. Set the service " +
+        "account JSON in the server environment, or turn PUSH_ENABLED off.",
+    );
+  }
+
+  // The group service reuses the same credential: reading users/{uid} to prove a
+  // member is real needs exactly the identity a service account has and a client
+  // does not.
+  const groupsEnabled = boolSetting(env, "GROUPS_ENABLED", false);
+  if (groupsEnabled && serviceAccountJson === "") {
+    throw new ConfigError(
+      "GROUPS_ENABLED is on but FIREBASE_SERVICE_ACCOUNT_JSON is missing. Set the service " +
+        "account JSON in the server environment, or turn GROUPS_ENABLED off.",
+    );
+  }
+
   return Object.freeze({
     port,
     hostname,
@@ -317,8 +430,19 @@ export function loadSettings(env: EnvSource): ServerSettings {
       region,
       presignTtlSeconds,
       maxUploadBytes,
+      maxChatUploadBytes,
       allowedContentTypes,
       objectPrefix,
+    }),
+    push: Object.freeze({
+      enabled: pushEnabled,
+      serviceAccountJson,
+      serviceAccountPresent: serviceAccountJson !== "",
+    }),
+    groups: Object.freeze({
+      enabled: groupsEnabled,
+      serviceAccountJson,
+      serviceAccountPresent: serviceAccountJson !== "",
     }),
   });
 }
@@ -335,12 +459,18 @@ export function publicConfigView(settings: ServerSettings): Record<string, unkno
     objectPrefix: settings.b2.objectPrefix,
     presignTtlSeconds: settings.b2.presignTtlSeconds,
     maxUploadBytes: settings.b2.maxUploadBytes,
+    maxChatUploadBytes: settings.b2.maxChatUploadBytes,
     allowedContentTypes: [...settings.b2.allowedContentTypes],
     firebaseProjectId: settings.firebaseProjectId,
     authRequired: settings.authRequired,
+    pushEnabled: settings.push.enabled,
+    groupsEnabled: settings.groups.enabled,
     credentialsPresent: {
       b2KeyId: settings.b2.keyId.length > 0,
       b2ApplicationKey: settings.b2.applicationKey.length > 0,
+      // Presence only. The credential itself is a multi-kilobyte private key
+      // and must never reach a response, a log line, or the startup banner.
+      firebaseServiceAccount: settings.push.serviceAccountPresent,
     },
   };
 }

@@ -33,6 +33,9 @@ const SETTINGS: B2Settings = {
   region: "us-east-005",
   presignTtlSeconds: 900,
   maxUploadBytes: 5 * 1024 * 1024,
+  // Chat attachments have their own ceiling, and the config refuses to start if
+  // it is ever lower than the user-object one.
+  maxChatUploadBytes: 25 * 1024 * 1024,
   allowedContentTypes: ALLOWED,
   objectPrefix: "media",
 };

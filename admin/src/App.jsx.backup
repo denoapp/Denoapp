@@ -1,0 +1,771 @@
+import { useState } from 'react'
+import './App.css'
+
+const menu = [
+  ['Dashboard', '▦'],
+  ['Users', '♙'],
+  ['Posts', '▤'],
+  ['Reels', '▶'],
+  ['Stories', '◉'],
+  ['Reports', '⚑'],
+  ['Scholar Verification', '✓'],
+  ['Creator Verification', '◆'],
+  ['Groups', '◎'],
+  ['Messages', '✉'],
+  ['Notifications', '♢'],
+  ['Appeals', '↗'],
+  ['Moderation', '◈'],
+  ['Storage', '□'],
+  ['Admins & Roles', '♟'],
+  ['Audit Logs', '≡'],
+  ['Settings', '⚙'],
+]
+
+const pageInfo = {
+  Posts: ['Posts', 'Manage posts, comments, reports and moderation actions.'],
+  Reels: ['Reels', 'Review DENO video reels and moderation status.'],
+  Stories: ['Stories', 'Review active stories, reports and expiry status.'],
+  Notifications: ['Notifications', 'Manage user, scholar and system notifications.'],
+  Appeals: ['Appeals', 'Review account, content and verification appeals.'],
+  Moderation: ['Moderation', 'Manage moderation queues, warnings, suspensions and bans.'],
+  Storage: ['Storage', 'Monitor media, documents, cleanup and storage usage.'],
+  'Admins & Roles': ['Admins & Roles', 'Manage administrator accounts and server-side permissions.'],
+  'Audit Logs': ['Audit Logs', 'Review administrative actions and security history.'],
+  Settings: ['Settings', 'Configure DENO feature flags, maintenance and app settings.'],
+}
+
+function EmptyTable({ title = 'No live data yet', text = 'Real data will appear after the DENO backend is connected.' }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <span>{text}</span>
+    </div>
+  )
+}
+
+function SummaryCards({ items }) {
+  return (
+    <div className="summary-grid">
+      {items.map(([label, value]) => (
+        <div className="summary-card" key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function GenericPage({ title, description }) {
+  return (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">DENO ADMIN</p>
+            <h1>{title}</h1>
+            <p className="muted">{description}</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+        <EmptyTable />
+      </div>
+    </section>
+  )
+}
+
+function App() {
+  const [active, setActive] = useState('Dashboard')
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  const openPage = (page) => {
+    setActive(page)
+    setMobileOpen(false)
+  }
+
+  const renderDashboard = () => (
+    <section className="content">
+      <div className="welcome">
+        <div>
+          <p className="eyebrow">DENO ADMIN PANEL</p>
+          <h1>Dashboard</h1>
+          <p>Central administration for the DENO Islamic social platform.</p>
+        </div>
+        <span className="status-pill">Backend not connected</span>
+      </div>
+
+      <SummaryCards items={[
+        ['Users', '—'],
+        ['Posts', '—'],
+        ['Reels', '—'],
+        ['Reports', '—'],
+        ['Scholars', '—'],
+        ['Storage', '—'],
+      ]} />
+
+      <div className="dashboard-grid">
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <h3>Quick Actions</h3>
+              <p>Common admin areas</p>
+            </div>
+          </div>
+          <div className="quick-actions">
+            <button onClick={() => openPage('Users')}>Manage Users <span>→</span></button>
+            <button onClick={() => openPage('Reports')}>Review Reports <span>→</span></button>
+            <button onClick={() => openPage('Scholar Verification')}>Scholar Verification <span>→</span></button>
+            <button onClick={() => openPage('Moderation')}>Moderation Queue <span>→</span></button>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <h3>System Status</h3>
+              <p>Production services</p>
+            </div>
+          </div>
+          <div className="system-list">
+            <div><span>Authentication</span><b>Not connected</b></div>
+            <div><span>Database</span><b>Not connected</b></div>
+            <div><span>Storage</span><b>Not connected</b></div>
+            <div><span>Notifications</span><b>Not connected</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  )
+
+  const renderUsers = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">USER MANAGEMENT</p>
+            <h1>Users</h1>
+            <p className="muted">Manage accounts, profiles, status, privacy and verification.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <SummaryCards items={[
+          ['Total Users', '—'],
+          ['Active', '—'],
+          ['Suspended', '—'],
+          ['Verified', '—'],
+        ]} />
+
+        <div className="toolbar">
+          <input placeholder="Search username or email..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Active</option>
+            <option>Suspended</option>
+            <option>Banned</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Verification</option>
+            <option>Verified</option>
+            <option>Unverified</option>
+          </select>
+        </div>
+
+        <EmptyTable title="No live users yet" />
+      </div>
+    </section>
+  )
+
+
+  const renderPosts = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">CONTENT MANAGEMENT</p>
+            <h1>Posts</h1>
+            <p className="muted">Review DENO posts, visibility, reports and moderation actions.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-card"><span>Total Posts</span><strong>—</strong></div>
+          <div className="summary-card"><span>Published</span><strong>—</strong></div>
+          <div className="summary-card"><span>Reported</span><strong>—</strong></div>
+          <div className="summary-card"><span>Removed</span><strong>—</strong></div>
+        </div>
+
+        <div className="toolbar">
+          <input placeholder="Search post, username or ID..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Published</option>
+            <option>Reported</option>
+            <option>Removed</option>
+            <option>Pending Review</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Privacy</option>
+            <option>Public</option>
+            <option>Followers</option>
+            <option>Private</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Types</option>
+            <option>Text</option>
+            <option>Photo</option>
+            <option>Video</option>
+            <option>Document</option>
+          </select>
+        </div>
+
+        <div className="posts-table-wrap">
+          <table className="posts-table">
+            <thead>
+              <tr>
+                <th>POST</th>
+                <th>AUTHOR</th>
+                <th>TYPE</th>
+                <th>VISIBILITY</th>
+                <th>STATUS</th>
+                <th>REPORTS</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><div className="post-placeholder"><strong>No live posts</strong><span>Backend connection required</span></div></td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td><span className="status-badge">—</span></td>
+                <td>—</td>
+                <td><button className="view-button" disabled>View</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="info-box">
+          <strong>Post moderation workflow</strong>
+          <p>Published → Reported → Review → Restore / Remove.</p>
+        </div>
+
+        <div className="demo-notice">
+          No fake post data is being shown. Real posts will be loaded from the DENO backend.
+        </div>
+      </div>
+    </section>
+  )
+
+
+  const renderReels = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">VIDEO MANAGEMENT</p>
+            <h1>Reels</h1>
+            <p className="muted">Review DENO reels, visibility, reports and moderation status.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-card"><span>Total Reels</span><strong>—</strong></div>
+          <div className="summary-card"><span>Published</span><strong>—</strong></div>
+          <div className="summary-card"><span>Reported</span><strong>—</strong></div>
+          <div className="summary-card"><span>Removed</span><strong>—</strong></div>
+        </div>
+
+        <div className="toolbar">
+          <input placeholder="Search reel, username or ID..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Published</option>
+            <option>Reported</option>
+            <option>Removed</option>
+            <option>Pending Review</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Privacy</option>
+            <option>Public</option>
+            <option>Followers</option>
+            <option>Private</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Media</option>
+            <option>Video</option>
+            <option>Processing</option>
+            <option>Failed</option>
+          </select>
+        </div>
+
+        <div className="posts-table-wrap">
+          <table className="posts-table">
+            <thead>
+              <tr>
+                <th>REEL</th>
+                <th>CREATOR</th>
+                <th>MEDIA</th>
+                <th>VISIBILITY</th>
+                <th>STATUS</th>
+                <th>REPORTS</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div className="post-placeholder">
+                    <strong>No live reels</strong>
+                    <span>Backend connection required</span>
+                  </div>
+                </td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td><span className="status-badge">—</span></td>
+                <td>—</td>
+                <td><button className="view-button" disabled>View</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="info-box">
+          <strong>Reel moderation workflow</strong>
+          <p>Upload → Automated checks → Publish / Review → Restore / Remove.</p>
+        </div>
+
+        <div className="demo-notice">
+          No fake reel data is being shown. Real reels will be loaded from the DENO backend.
+        </div>
+      </div>
+    </section>
+  )
+
+
+  const renderStories = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">STORY MANAGEMENT</p>
+            <h1>Stories</h1>
+            <p className="muted">Review DENO stories, visibility, reports and expiry status.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-card"><span>Total Stories</span><strong>—</strong></div>
+          <div className="summary-card"><span>Active</span><strong>—</strong></div>
+          <div className="summary-card"><span>Reported</span><strong>—</strong></div>
+          <div className="summary-card"><span>Expired</span><strong>—</strong></div>
+        </div>
+
+        <div className="toolbar">
+          <input placeholder="Search story, username or ID..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Active</option>
+            <option>Reported</option>
+            <option>Removed</option>
+            <option>Expired</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Privacy</option>
+            <option>Public</option>
+            <option>Followers</option>
+            <option>Private</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Media</option>
+            <option>Photo</option>
+            <option>Video</option>
+          </select>
+        </div>
+
+        <div className="posts-table-wrap">
+          <table className="posts-table">
+            <thead>
+              <tr>
+                <th>STORY</th>
+                <th>AUTHOR</th>
+                <th>MEDIA</th>
+                <th>VISIBILITY</th>
+                <th>STATUS</th>
+                <th>REPORTS</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div className="post-placeholder">
+                    <strong>No live stories</strong>
+                    <span>Backend connection required</span>
+                  </div>
+                </td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td><span className="status-badge">—</span></td>
+                <td>—</td>
+                <td><button className="view-button" disabled>View</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="info-box">
+          <strong>Story lifecycle</strong>
+          <p>Published → Active → Expired. Reported stories can enter moderation before expiry.</p>
+        </div>
+
+        <div className="demo-notice">
+          No fake story data is being shown. Real stories will be loaded from the DENO backend.
+        </div>
+      </div>
+    </section>
+  )
+
+
+  const renderReports = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">SAFETY & MODERATION</p>
+            <h1>Reports</h1>
+            <p className="muted">Review user reports and take authorized moderation actions.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-card"><span>Total Reports</span><strong>—</strong></div>
+          <div className="summary-card"><span>Pending</span><strong>—</strong></div>
+          <div className="summary-card"><span>Reviewing</span><strong>—</strong></div>
+          <div className="summary-card"><span>Resolved</span><strong>—</strong></div>
+        </div>
+
+        <div className="toolbar">
+          <input placeholder="Search report, user or content ID..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Pending</option>
+            <option>Reviewing</option>
+            <option>Resolved</option>
+            <option>Dismissed</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Types</option>
+            <option>Post</option>
+            <option>Reel</option>
+            <option>Story</option>
+            <option>User</option>
+            <option>Message</option>
+            <option>Group</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Priority</option>
+            <option>High</option>
+            <option>Medium</option>
+            <option>Low</option>
+          </select>
+        </div>
+
+        <div className="posts-table-wrap">
+          <table className="posts-table">
+            <thead>
+              <tr>
+                <th>REPORT</th>
+                <th>REPORTER</th>
+                <th>CONTENT</th>
+                <th>TYPE</th>
+                <th>PRIORITY</th>
+                <th>STATUS</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div className="post-placeholder">
+                    <strong>No live reports</strong>
+                    <span>Backend connection required</span>
+                  </div>
+                </td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td><span className="status-badge">—</span></td>
+                <td><span className="status-badge">—</span></td>
+                <td><button className="view-button" disabled>Review</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="info-box">
+          <strong>Report review workflow</strong>
+          <p>Pending → Reviewing → Action / Dismiss → Resolved. All moderation actions should be recorded in the audit log.</p>
+        </div>
+
+        <div className="demo-notice">
+          No fake report data is being shown. Real reports will be loaded from the DENO backend.
+        </div>
+      </div>
+    </section>
+  )
+
+  const renderScholarVerification = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">VERIFICATION</p>
+            <h1>Scholar Verification</h1>
+            <p className="muted">Review scholar applications and private qualification documents.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <SummaryCards items={[
+          ['Pending', '—'],
+          ['Verified', '—'],
+          ['Rejected', '—'],
+          ['Suspended', '—'],
+        ]} />
+
+        <div className="toolbar">
+          <input placeholder="Search scholar or username..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Pending</option>
+            <option>Verified</option>
+            <option>Rejected</option>
+            <option>Suspended</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Scholar Types</option>
+            <option>Aalim</option>
+            <option>Mufti</option>
+            <option>Hafiz</option>
+            <option>Qari</option>
+            <option>Islamic Teacher</option>
+          </select>
+        </div>
+
+        <EmptyTable
+          title="No live scholar applications"
+          text="Private certificates and supporting documents will be available only to authorized reviewers after backend integration."
+        />
+
+        <div className="info-box">
+          <strong>Verification workflow</strong>
+          <p>Application → Document Review → Decision → Verified / Rejected / Suspended</p>
+        </div>
+      </div>
+    </section>
+  )
+
+  const renderCreatorVerification = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">VERIFICATION</p>
+            <h1>Creator Verification</h1>
+            <p className="muted">Review creator verification applications and badge status.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <SummaryCards items={[
+          ['Pending', '—'],
+          ['Verified', '—'],
+          ['Rejected', '—'],
+          ['Suspended', '—'],
+        ]} />
+
+        <div className="toolbar">
+          <input placeholder="Search creator..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Pending</option>
+            <option>Verified</option>
+            <option>Rejected</option>
+            <option>Suspended</option>
+          </select>
+        </div>
+
+        <EmptyTable title="No live creator applications" />
+        <div className="info-box">
+          <strong>Creator badge</strong>
+          <p>Admin-controlled verification. A creator badge does not mean endorsement of every statement or post.</p>
+        </div>
+      </div>
+    </section>
+  )
+
+  const renderGroups = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">COMMUNITY MANAGEMENT</p>
+            <h1>Groups</h1>
+            <p className="muted">Manage DENO groups, members, privacy and reported communities.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <SummaryCards items={[
+          ['Total Groups', '—'],
+          ['Active', '—'],
+          ['Reported', '—'],
+          ['Suspended', '—'],
+        ]} />
+
+        <div className="toolbar">
+          <input placeholder="Search group name or owner..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Active</option>
+            <option>Reported</option>
+            <option>Suspended</option>
+          </select>
+          <select defaultValue="ALL">
+            <option value="ALL">All Privacy</option>
+            <option>Public</option>
+            <option>Private</option>
+          </select>
+        </div>
+
+        <EmptyTable title="No live groups" />
+        <div className="info-box">
+          <strong>Group management</strong>
+          <p>Admins can review reported groups, inspect details and suspend or restore communities when authorized.</p>
+        </div>
+      </div>
+    </section>
+  )
+
+  const renderMessages = () => (
+    <section className="content">
+      <div className="page-card">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">MESSAGING SAFETY</p>
+            <h1>Messages</h1>
+            <p className="muted">Only reported or flagged conversations should become reviewable.</p>
+          </div>
+          <span className="backend-badge">Backend not connected</span>
+        </div>
+
+        <SummaryCards items={[
+          ['Flagged', '—'],
+          ['Under Review', '—'],
+          ['Resolved', '—'],
+        ]} />
+
+        <div className="toolbar">
+          <input placeholder="Search conversations..." />
+          <select defaultValue="ALL">
+            <option value="ALL">All Status</option>
+            <option>Flagged</option>
+            <option>Under Review</option>
+            <option>Resolved</option>
+          </select>
+        </div>
+
+        <EmptyTable title="No flagged conversations yet" text="Private chats are not broadly browsable by Admin." />
+      </div>
+    </section>
+  )
+
+  const renderGeneric = (page) => {
+    const [title, description] = pageInfo[page]
+    return <GenericPage title={title} description={description} />
+  }
+
+  const renderPage = () => {
+    if (active === 'Dashboard') return renderDashboard()
+    if (active === 'Users') return renderUsers()
+    if (active === 'Posts') return renderPosts()
+    if (active === 'Reels') return renderReels()
+    if (active === 'Stories') return renderStories()
+    if (active === 'Reports') return renderReports()
+    if (active === 'Scholar Verification') return renderScholarVerification()
+    if (active === 'Creator Verification') return renderCreatorVerification()
+    if (active === 'Groups') return renderGroups()
+    if (active === 'Messages') return renderMessages()
+    return renderGeneric(active)
+  }
+
+  return (
+    <div className="admin-shell">
+      <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
+        <div className="brand">
+          <div className="brand-mark">D</div>
+          <div>
+            <strong>DENO</strong>
+            <span>Admin Panel</span>
+          </div>
+        </div>
+
+        <nav className="nav">
+          {menu.map(([label, icon]) => (
+            <button
+              key={label}
+              className={`nav-item ${active === label ? 'active' : ''}`}
+              onClick={() => openPage(label)}
+            >
+              <span className="nav-icon">{icon}</span>
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="profile-mini">
+          <div className="admin-avatar">A</div>
+          <div>
+            <strong>Administrator</strong>
+            <span>Super Admin</span>
+          </div>
+        </div>
+      </aside>
+
+      {mobileOpen && (
+        <button
+          className="mobile-backdrop"
+          aria-label="Close menu"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      <main className="main">
+        <header className="topbar">
+          <div className="topbar-left">
+            <button className="menu-button" onClick={() => setMobileOpen(true)} aria-label="Open menu">☰</button>
+            <div>
+              <strong>{active}</strong>
+              <span>DENO Administration</span>
+            </div>
+          </div>
+          <div className="topbar-right">
+            <span className="connection-dot">Backend offline</span>
+          </div>
+        </header>
+
+        {renderPage()}
+      </main>
+    </div>
+  )
+}
+
+export default App
