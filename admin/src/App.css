@@ -118,3 +118,35 @@ button{cursor:pointer}
 .login-security-note strong{font-size:11px;color:#333}
 .login-security-note span{font-size:10px;color:#858e9c;margin-top:4px;line-height:1.4}
 @media(max-width:520px){.admin-login-page{padding:16px}.admin-login-card{padding:22px}}
+
+/* ------------------------------------------------------------------ */
+/* Live data surfaces (Scholar Verification).                          */
+/*                                                                     */
+/* Only the connected screens use these; the rest of the panel is still */
+/* placeholders and keeps its existing styling.                        */
+/* ------------------------------------------------------------------ */
+.heading-actions{display:flex;align-items:center;gap:10px}
+.btn{border:1px solid #dfe4eb;background:#fff;border-radius:8px;padding:8px 12px;font:inherit;font-size:12px;font-weight:600;color:#273142;cursor:pointer}
+.btn:hover:not(:disabled){border-color:#b9d2f8;background:#f8fbff}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.primary{background:#1769e0;border-color:#1769e0;color:#fff}
+.btn.primary:hover:not(:disabled){background:#1259c4}
+.btn.danger{background:#fff;border-color:#f3c9c9;color:#b42318}
+.btn.danger:hover:not(:disabled){background:#fff5f5}
+.link{border:0;background:none;padding:0;color:#1769e0;font:inherit;font-size:inherit;font-weight:600;cursor:pointer;text-decoration:underline}
+.alert{margin:0 0 16px;border:1px solid #dceaff;background:#f8fbff;border-radius:9px;padding:11px 13px;font-size:12px;color:#33415c}
+.alert.error{border-color:#f3c9c9;background:#fff5f5;color:#8a1c14}
+.table-wrap{overflow-x:auto;border:1px solid #e6eaf0;border-radius:11px}
+.data-table{width:100%;border-collapse:collapse;font-size:12px}
+.data-table th{text-align:left;background:#f8fafc;color:#6b7688;font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:11px 13px;border-bottom:1px solid #e6eaf0;white-space:nowrap}
+.data-table td{padding:12px 13px;border-bottom:1px solid #eef1f5;color:#3d4757;vertical-align:middle}
+.data-table tr:last-child td{border-bottom:0}
+.data-table td strong{display:block;font-size:12px;color:#1f2937}
+.data-table td .sub{display:block;font-size:10px;color:#8a94a6;margin-top:2px}
+.data-table td.actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;border-radius:20px;padding:4px 9px;font-size:10px;font-weight:700;text-transform:capitalize;border:1px solid transparent}
+.pill-pending{background:#fff7e6;color:#a15c00;border-color:#ffe4b0}
+.pill-approved{background:#e9f8ef;color:#116b3a;border-color:#c3ecd3}
+.pill-rejected{background:#fdeeed;color:#a1201a;border-color:#f6cfcd}
+.pill-suspended{background:#f2f4f7;color:#4a5568;border-color:#dfe3ea}
+.pill-unknown{background:#f2f4f7;color:#6b7280;border-color:#e2e6ec}

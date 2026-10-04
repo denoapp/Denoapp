@@ -67,6 +67,17 @@ export interface GroupsConfig {
   readonly serviceAccountPresent: boolean;
 }
 
+/**
+ * The admin API reads its role documents with the service account rather than
+ * with the caller's token: a client that could read its own role document could
+ * also write one. It has no separate credential, so it reuses the same one and
+ * only records whether it is present.
+ */
+export interface AdminConfig {
+  readonly serviceAccountJson: string;
+  readonly serviceAccountPresent: boolean;
+}
+
 export interface ServerSettings {
   readonly port: number;
   readonly hostname: string;
@@ -79,6 +90,7 @@ export interface ServerSettings {
   readonly b2: B2Settings;
   readonly push: PushSettings;
   readonly groups: GroupsConfig;
+  readonly admin: AdminConfig;
 }
 
 const DEFAULT_BUCKET = "deenolink-media";
@@ -441,6 +453,12 @@ export function loadSettings(env: EnvSource): ServerSettings {
     }),
     groups: Object.freeze({
       enabled: groupsEnabled,
+      serviceAccountJson,
+      serviceAccountPresent: serviceAccountJson !== "",
+    }),
+    // No enable flag: with a credential present the admin API is live, and
+    // without one it answers 503 rather than pretending to have no roles.
+    admin: Object.freeze({
       serviceAccountJson,
       serviceAccountPresent: serviceAccountJson !== "",
     }),

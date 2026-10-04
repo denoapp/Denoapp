@@ -44,15 +44,12 @@ import {
   createPushService,
   parsePushKind,
   PushError,
-  PushService,
   type PushOutcome,
   type PushRequest,
+  PushService,
 } from "./push.ts";
-import {
-  createGroupService,
-  GroupError,
-  GroupService,
-} from "./groups.ts";
+import { type AdminHandler, createAdminHandler } from "./admin.ts";
+import { createGroupService, GroupError, GroupService } from "./groups.ts";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
@@ -83,6 +80,22 @@ function applyCors(request: Request, settings: ServerSettings): Record<string, s
     };
   }
   return {};
+}
+
+/**
+ * The admin handler builds its own headers, so the allowlist headers are added
+ * on the way out. Without this the browser panel would be blocked by CORS even
+ * with its origin allowed.
+ */
+function withCors(response: Response, cors: Record<string, string>): Response {
+  if (Object.keys(cors).length === 0) return response;
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(cors)) headers.set(name, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -194,6 +207,11 @@ export interface HandlerDeps {
    * admin checks can be tested with no Firebase project and no credentials.
    */
   groups?: GroupService;
+  /**
+   * The admin API handler, injectable so role and route tests run with no
+   * service account and no Firebase project.
+   */
+  admin?: AdminHandler;
 }
 
 export function createHandler(settings: ServerSettings, deps: HandlerDeps = {}) {
@@ -219,6 +237,37 @@ export function createHandler(settings: ServerSettings, deps: HandlerDeps = {}) 
       throw new GroupError("Group writes are not enabled on this server.", 503);
     }
     return groups;
+  }
+
+  // The admin API needs the service account, so it is built once and reused.
+  // A build failure must not take the media, group or push routes down with
+  // it: it is recorded, and only /v1/admin/* answers 503 because of it.
+  let adminHandler: AdminHandler | null = deps.admin ?? null;
+  // Only a failed construction sets this: until then the handler is built on
+  // the first admin request, so a missing credential cannot take the rest of
+  // the server down at startup.
+  let adminUnavailable = false;
+
+  function requireAdmin(): AdminHandler {
+    if (adminHandler === null && !adminUnavailable) {
+      try {
+        adminHandler = createAdminHandler({
+          firebaseProjectId: settings.firebaseProjectId,
+          authRequired: settings.authRequired,
+          devUid: settings.devUid,
+          // The same credential the group service uses. Present already when
+          // groups are on; the admin API needs it either way.
+          serviceAccountJson: settings.admin.serviceAccountJson,
+        });
+      } catch (error) {
+        adminUnavailable = true;
+        console.error("Admin API is disabled on this server:", error);
+      }
+    }
+    if (adminHandler === null) {
+      throw new MediaError("Admin API is not enabled on this server.", 503);
+    }
+    return adminHandler;
   }
 
   async function authenticate(request: Request): Promise<string> {
@@ -271,6 +320,15 @@ export function createHandler(settings: ServerSettings, deps: HandlerDeps = {}) 
         throw new MediaError("Not found.", 404);
       }
 
+      // The admin API authenticates for itself, because a caller who is not an
+      // administrator has to be refused by the admin routes rather than by the
+      // generic media gate.
+      if (url.pathname.startsWith("/v1/admin/")) {
+        const adminResponse = await requireAdmin()(request);
+        if (adminResponse !== null) return withCors(adminResponse, cors);
+        return jsonResponse(404, { error: "Not found." }, cors);
+      }
+
       const uid = await authenticate(request);
 
       if (method === "POST" && url.pathname === "/v1/media/upload-url") {
@@ -282,7 +340,7 @@ export function createHandler(settings: ServerSettings, deps: HandlerDeps = {}) 
         const chatKind = body.chatKind;
         if (chatKind !== undefined && chatKind !== null) {
           if (typeof chatKind !== "string") {
-            throw new MediaError("Field \"chatKind\" must be a string.", 400);
+            throw new MediaError('Field "chatKind" must be a string.', 400);
           }
           const contentType = normalizeContentType(readString(body, "contentType"));
           const sizeBytes = readOptionalPositiveInt(
@@ -465,7 +523,9 @@ export function createHandler(settings: ServerSettings, deps: HandlerDeps = {}) 
         if (chat !== null && !canDeleteChatKey(chat, uid)) {
           throw new MediaError("You may only delete media you uploaded.", 403);
         }
-        const key = chat !== null ? rawKey.trim() : assertReadableKey(rawKey, settings.b2.objectPrefix);
+        const key = chat !== null
+          ? rawKey.trim()
+          : assertReadableKey(rawKey, settings.b2.objectPrefix);
         await client.deleteObject(key, uid);
         return jsonResponse(200, { deleted: true, key }, cors);
       }

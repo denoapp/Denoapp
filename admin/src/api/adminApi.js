@@ -8,6 +8,15 @@ export async function fetchScholarApplications() {
   return apiRequest("/v1/admin/scholar-applications");
 }
 
+/**
+ * The caller's own role, resolved by the backend from the role documents. The
+ * panel uses it only to decide which buttons to offer; the backend refuses
+ * anything the caller has no role for regardless of what is rendered.
+ */
+export async function fetchAdminRole() {
+  return apiRequest("/v1/admin/me");
+}
+
 export async function decideScholarApplication(uid, decisionData) {
   return apiRequest(`/v1/admin/scholar-applications/${uid}/decision`, {
     method: "POST",

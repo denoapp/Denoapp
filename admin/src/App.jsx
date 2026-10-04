@@ -3,6 +3,7 @@ import './App.css'
 import { getStoredAuth, loginWithEmailPassword, logout } from './api/auth.js'
 import {
   fetchScholarApplications,
+  fetchAdminRole,
   decideScholarApplication,
   fetchUsers,
   updateUserStatus,
@@ -101,6 +102,53 @@ function App() {
   const [error, setError] = useState('')
   const [active, setActive] = useState('Dashboard')
   const [mobileOpen, setMobileOpen] = useState(false)
+
+  // Scholar verification. Kept separate from the other screens on purpose: those
+  // still have no backend route, and borrowing their state would suggest they are
+  // connected too.
+  const [scholar, setScholar] = useState({ applications: [], counts: null, loading: true, error: '' })
+  const [scholarRole, setScholarRole] = useState(null)
+  const [scholarQuery, setScholarQuery] = useState('')
+  const [scholarStatus, setScholarStatus] = useState('ALL')
+  const [scholarType, setScholarType] = useState('ALL')
+  const [scholarBusy, setScholarBusy] = useState('')
+  const [scholarNotice, setScholarNotice] = useState('')
+
+  const loadScholars = async () => {
+    setScholar((prev) => ({ ...prev, loading: true, error: '' }))
+    try {
+      const [list, me] = await Promise.all([
+        fetchScholarApplications(),
+        fetchAdminRole(),
+      ])
+      setScholar({ applications: list.applications || [], counts: list.counts || null, loading: false, error: '' })
+      setScholarRole(me)
+    } catch (err) {
+      setScholar({ applications: [], counts: null, loading: false, error: err.message || 'Could not load applications' })
+    }
+  }
+
+  // Loaded on entry and on every return to the page, so a decision made in
+  // another tab shows up instead of a stale table.
+  useEffect(() => {
+    if (auth && active === 'Scholar Verification') loadScholars()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth, active])
+
+  const decideScholar = async (uid, decision) => {
+    setScholarBusy(uid)
+    setScholarNotice('')
+    try {
+      await decideScholarApplication(uid, { decision })
+      const verb = decision === 'approved' ? 'Approved' : decision === 'rejected' ? 'Rejected' : 'Suspended'
+      setScholarNotice(`Application ${verb.toLowerCase()}.`)
+      await loadScholars()
+    } catch (err) {
+      setScholarNotice(err.message || 'The decision could not be recorded')
+    } finally {
+      setScholarBusy('')
+    }
+  }
 
   const handleLogin = async (e) => {
     e.preventDefault()
@@ -711,56 +759,175 @@ function App() {
     </section>
   )
 
-  const renderScholarVerification = () => (
-    <section className="content">
-      <div className="page-card">
-        <div className="page-heading">
-          <div>
-            <p className="eyebrow">VERIFICATION</p>
-            <h1>Scholar Verification</h1>
-            <p className="muted">Review scholar applications and private qualification documents.</p>
+const renderScholarVerification = () => {
+    const counts = scholar.counts || {}
+    const rows = scholar.applications.filter((application) => {
+      const term = scholarQuery.trim().toLowerCase()
+      const matchesTerm = !term ||
+        [application.fullName, application.username, application.uid, application.institution]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(term))
+      const matchesStatus = scholarStatus === 'ALL' || application.status === scholarStatus
+      const matchesType = scholarType === 'ALL' || application.scholarType === scholarType
+      return matchesTerm && matchesStatus && matchesType
+    })
+    const scholarTypes = [...new Set(scholar.applications.map((a) => a.scholarType).filter(Boolean))]
+    // Suspend lifts a badge, so the backend refuses it to a moderator. The button
+    // is hidden rather than shown-and-failing, and the backend still decides.
+    const maySuspend = scholarRole?.isAdmin === true
+    const pending = rows.filter((application) => application.status === 'pending')
+
+    return (
+      <section className="content">
+        <div className="page-card">
+          <div className="page-heading">
+            <div>
+              <p className="eyebrow">VERIFICATION</p>
+              <h1>Scholar Verification</h1>
+              <p className="muted">Review scholar applications and private qualification documents.</p>
+            </div>
+            <div className="heading-actions">
+              <span className="backend-badge">
+                {scholar.loading ? 'Loading…' : 'Staging backend'}
+              </span>
+              <button className="btn" onClick={loadScholars} disabled={scholar.loading}>
+                Refresh
+              </button>
+            </div>
           </div>
-          <span className="backend-badge">Backend not connected</span>
+
+          {scholar.error && (
+            <div className="alert error">
+              {scholar.error}
+              {' '}
+              <button className="link" onClick={loadScholars}>Retry</button>
+            </div>
+          )}
+          {scholarNotice && <div className="alert">{scholarNotice}</div>}
+
+          <SummaryCards items={[
+            ['Pending', counts.pending ?? 0],
+            ['Verified', counts.approved ?? 0],
+            ['Rejected', counts.rejected ?? 0],
+            ['Suspended', counts.suspended ?? 0],
+          ]} />
+
+          <div className="toolbar">
+            <input
+              placeholder="Search scholar or username..."
+              value={scholarQuery}
+              onChange={(e) => setScholarQuery(e.target.value)}
+            />
+            <select value={scholarStatus} onChange={(e) => setScholarStatus(e.target.value)}>
+              <option value="ALL">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Verified</option>
+              <option value="rejected">Rejected</option>
+              <option value="suspended">Suspended</option>
+            </select>
+            <select value={scholarType} onChange={(e) => setScholarType(e.target.value)}>
+              <option value="ALL">All Scholar Types</option>
+              {scholarTypes.map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))}
+            </select>
+          </div>
+
+          {scholar.loading ? (
+            <div className="empty-state">
+              <strong>Loading applications…</strong>
+              <span>Reading verificationApplications from the staging project.</span>
+            </div>
+          ) : rows.length === 0 ? (
+            <EmptyTable
+              title={scholar.applications.length === 0
+                ? 'No live scholar applications'
+                : 'Nothing matches these filters'}
+              text={scholar.applications.length === 0
+                ? 'Applications appear here as soon as somebody submits one.'
+                : 'Clear the search or filters to see the rest of the queue.'}
+            />
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Applicant</th>
+                    <th>Type</th>
+                    <th>Institution</th>
+                    <th>Country</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((application) => (
+                    <tr key={application.uid}>
+                      <td>
+                        <strong>{application.fullName || '—'}</strong>
+                        <span className="sub">{application.username ? '@' + application.username : application.uid}</span>
+                      </td>
+                      <td>{application.scholarType || '—'}</td>
+                      <td>{application.institution || '—'}</td>
+                      <td>{application.country || '—'}</td>
+                      <td>
+                        <span className={'pill pill-' + (application.status || 'unknown')}>
+                          {application.status || 'unknown'}
+                        </span>
+                      </td>
+                      <td className="actions">
+                        {application.status === 'pending' ? (
+                          <>
+                            <button
+                              className="btn primary"
+                              disabled={scholarBusy === application.uid}
+                              onClick={() => decideScholar(application.uid, 'approved')}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              className="btn danger"
+                              disabled={scholarBusy === application.uid}
+                              onClick={() => decideScholar(application.uid, 'rejected')}
+                            >
+                              Reject
+                            </button>
+                          </>
+                        ) : (
+                          <span className="muted">
+                            {application.reviewedBy ? 'by ' + application.reviewedBy : 'decided'}
+                          </span>
+                        )}
+                        {maySuspend && application.status === 'approved' && (
+                          <button
+                            className="btn"
+                            disabled={scholarBusy === application.uid}
+                            onClick={() => decideScholar(application.uid, 'suspended')}
+                          >
+                            Suspend
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="info-box">
+            <strong>Verification workflow</strong>
+            <p>Application → Document Review → Decision → Verified / Rejected / Suspended</p>
+            <p>
+              {pending.length} pending in view. Applicant email, phone and uploaded document
+              locations are deliberately not returned to this panel; open the application from
+              the app to read them.
+            </p>
+          </div>
         </div>
-
-        <SummaryCards items={[
-          ['Pending', '—'],
-          ['Verified', '—'],
-          ['Rejected', '—'],
-          ['Suspended', '—'],
-        ]} />
-
-        <div className="toolbar">
-          <input placeholder="Search scholar or username..." />
-          <select defaultValue="ALL">
-            <option value="ALL">All Status</option>
-            <option>Pending</option>
-            <option>Verified</option>
-            <option>Rejected</option>
-            <option>Suspended</option>
-          </select>
-          <select defaultValue="ALL">
-            <option value="ALL">All Scholar Types</option>
-            <option>Aalim</option>
-            <option>Mufti</option>
-            <option>Hafiz</option>
-            <option>Qari</option>
-            <option>Islamic Teacher</option>
-          </select>
-        </div>
-
-        <EmptyTable
-          title="No live scholar applications"
-          text="Private certificates and supporting documents will be available only to authorized reviewers after backend integration."
-        />
-
-        <div className="info-box">
-          <strong>Verification workflow</strong>
-          <p>Application → Document Review → Decision → Verified / Rejected / Suspended</p>
-        </div>
-      </div>
-    </section>
-  )
+      </section>
+    )
+  }
 
   const renderCreatorVerification = () => (
     <section className="content">

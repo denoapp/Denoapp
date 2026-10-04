@@ -345,3 +345,63 @@ Deno.test("only the uploader may delete a chat object", async () => {
   assertEquals(notMine.status, 403);
   assertEquals(deleted.length, 1, "the refused delete must not have reached the client");
 });
+
+// ---------------------------------------------------------------------------
+// Admin route mounting
+//
+// The admin handler builds its own headers, so the mount has to add the CORS
+// ones. This is the test that would have caught the panel being blocked by the
+// browser even though its origin is allowlisted.
+// ---------------------------------------------------------------------------
+
+Deno.test("an admin response carries the allowlisted origin's CORS headers", async () => {
+  const handler = createHandler(
+    settingsFor({ B2_CORS_ALLOWED_ORIGINS: "https://denoapp.github.io" }),
+    {
+      now: () => FIXED_NOW,
+      admin: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ count: 0, applications: [], counts: {} }), {
+            status: 200,
+            headers: { "content-type": "application/json", "cache-control": "no-store" },
+          }),
+        ),
+    },
+  );
+
+  const allowed = await handler(
+    new Request("http://localhost:8787/v1/admin/scholar-applications", {
+      headers: { origin: "https://denoapp.github.io", authorization: "Bearer test" },
+    }),
+  );
+  assertEquals(allowed.status, 200);
+  assertEquals(allowed.headers.get("access-control-allow-origin"), "https://denoapp.github.io");
+  assertEquals(allowed.headers.get("vary"), "Origin");
+  // The handler's own headers survive.
+  assertEquals(allowed.headers.get("cache-control"), "no-store");
+
+  const denied = await handler(
+    new Request("http://localhost:8787/v1/admin/scholar-applications", {
+      headers: { origin: "https://evil.example", authorization: "Bearer test" },
+    }),
+  );
+  assertEquals(denied.status, 200);
+  assertEquals(denied.headers.get("access-control-allow-origin"), null);
+});
+
+Deno.test("an admin route without the credential answers 503, not a crash", async () => {
+  // No service account in the environment: the admin API must report that it is
+  // unavailable rather than take the rest of the server down with it.
+  const handler = createHandler(settingsFor());
+  const response = await handler(
+    new Request("http://localhost:8787/v1/admin/scholar-applications", {
+      headers: { authorization: "Bearer test" },
+    }),
+  );
+  assertEquals(response.status, 503);
+  const body = await response.json() as { error?: string };
+  assertMatch(body.error ?? "", /not enabled/i);
+
+  // The rest of the server still works.
+  assertEquals((await handler(new Request("http://localhost:8787/health"))).status, 200);
+});
