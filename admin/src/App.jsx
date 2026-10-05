@@ -1221,39 +1221,8 @@ const renderScholarVerification = () => {
                           className="btn"
                           onClick={() => openScholarDetails(application.uid)}
                         >
-                          View
+                          View Details
                         </button>
-                        {application.status === 'pending' ? (
-                          <>
-                            <button
-                              className="btn primary"
-                              disabled={scholarBusy === application.uid}
-                              onClick={() => decideScholar(application.uid, 'approved')}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              className="btn danger"
-                              disabled={scholarBusy === application.uid}
-                              onClick={() => decideScholar(application.uid, 'rejected')}
-                            >
-                              Reject
-                            </button>
-                          </>
-                        ) : (
-                          <span className="muted">
-                            {application.reviewedBy ? 'by ' + application.reviewedBy : 'decided'}
-                          </span>
-                        )}
-                        {maySuspend && application.status === 'approved' && (
-                          <button
-                            className="btn"
-                            disabled={scholarBusy === application.uid}
-                            onClick={() => decideScholar(application.uid, 'suspended')}
-                          >
-                            Suspend
-                          </button>
-                        )}
                       </td>
                     </tr>
                   ))}
