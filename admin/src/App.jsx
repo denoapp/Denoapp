@@ -3,6 +3,8 @@ import './App.css'
 import { getStoredAuth, loginWithEmailPassword, logout } from './api/auth.js'
 import {
   fetchScholarApplications,
+  fetchScholarApplication,
+  fetchScholarDocumentUrl,
   fetchAdminRole,
   decideScholarApplication,
   fetchUsers,
@@ -94,6 +96,68 @@ function GenericPage({ title, description }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Scholar review helpers.
+//
+// A reviewer reads an application before deciding on it, so every one of these
+// has to answer for a document that is incomplete rather than assume one that
+// is complete: a blank field reads as "Not provided", a timestamp that will not
+// parse is shown as stored instead of becoming "Invalid Date", and a document
+// that cannot be opened is a state rather than a crash.
+// ---------------------------------------------------------------------------
+
+const NOT_PROVIDED = 'Not provided'
+
+const STATUS_LABELS = {
+  pending: 'Pending',
+  approved: 'Verified',
+  rejected: 'Rejected',
+  suspended: 'Suspended',
+}
+
+/** Shown instead of a View button, per document state, by the backend. */
+const DOCUMENT_STATE_TEXT = {
+  missing: 'Not provided',
+  notUploaded: 'Not uploaded — kept on the applicant’s device, so there is no file to open',
+}
+
+function hasValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== ''
+}
+
+function DetailField({ label, value }) {
+  return (
+    <div className="detail-field">
+      <span className="detail-label">{label}</span>
+      <span className={'detail-value' + (hasValue(value) ? '' : ' detail-empty')}>
+        {hasValue(value) ? String(value) : NOT_PROVIDED}
+      </span>
+    </div>
+  )
+}
+
+function DetailSection({ title, children }) {
+  return (
+    <section className="detail-section">
+      <h3>{title}</h3>
+      <div className="detail-grid">{children}</div>
+    </section>
+  )
+}
+
+/**
+ * A stored timestamp, formatted for a reviewer.
+ *
+ * Firestore answers with an ISO string, and a hand-edited or legacy document can
+ * hold something else entirely, so a value that will not parse is shown as
+ * stored rather than replaced with "Invalid Date".
+ */
+function formatTimestamp(value) {
+  if (!hasValue(value)) return NOT_PROVIDED
+  const parsed = Date.parse(String(value))
+  return Number.isNaN(parsed) ? String(value) : new Date(parsed).toLocaleString()
+}
+
 function App() {
   const [auth, setAuth] = useState(() => getStoredAuth())
   const [email, setEmail] = useState('')
@@ -113,6 +177,18 @@ function App() {
   const [scholarType, setScholarType] = useState('ALL')
   const [scholarBusy, setScholarBusy] = useState('')
   const [scholarNotice, setScholarNotice] = useState('')
+
+  // The application a reviewer has opened. Null means nothing is open, so the
+  // panel can never be showing details for an application that was closed.
+  const [scholarDetail, setScholarDetail] = useState(null)
+  const [scholarDetailLoading, setScholarDetailLoading] = useState(false)
+  const [scholarDetailError, setScholarDetailError] = useState('')
+  const [scholarNote, setScholarNote] = useState('')
+  const [scholarDocBusy, setScholarDocBusy] = useState('')
+  const [scholarDocError, setScholarDocError] = useState('')
+  // Held only when the browser refuses to open the link itself, so the reviewer
+  // gets a link they can click rather than a button that did nothing.
+  const [scholarDocLink, setScholarDocLink] = useState(null)
 
   const loadScholars = async () => {
     setScholar((prev) => ({ ...prev, loading: true, error: '' }))
@@ -135,18 +211,108 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth, active])
 
-  const decideScholar = async (uid, decision) => {
+  const decideScholar = async (uid, decision, note = '') => {
     setScholarBusy(uid)
     setScholarNotice('')
     try {
-      await decideScholarApplication(uid, { decision })
+      await decideScholarApplication(uid, { decision, reviewNote: note.trim() })
       const verb = decision === 'approved' ? 'Approved' : decision === 'rejected' ? 'Rejected' : 'Suspended'
       setScholarNotice(`Application ${verb.toLowerCase()}.`)
       await loadScholars()
+      // The decision is recorded and the queue has moved on, so the panel this
+      // reviewer was reading is closed rather than left showing a stale status.
+      if (scholarDetail && scholarDetail.uid === uid) {
+        setScholarDetail(null)
+        setScholarNote('')
+      }
     } catch (err) {
       setScholarNotice(err.message || 'The decision could not be recorded')
     } finally {
       setScholarBusy('')
+    }
+  }
+
+  /**
+   * Opens one application.
+   *
+   * Fetched on open rather than carried in the queue row, because the answer
+   * carries the applicant's contact details and document state: a reviewer asks
+   * for one application, so that is what the panel asks for.
+   */
+  const openScholarDetails = async (uid) => {
+    setScholarDetail({ uid })
+    setScholarDetailLoading(true)
+    setScholarDetailError('')
+    setScholarDocError('')
+    setScholarDocLink(null)
+    setScholarNote('')
+    try {
+      const detail = await fetchScholarApplication(uid)
+      setScholarDetail({
+        uid,
+        application: detail.application || {},
+        documents: Array.isArray(detail.documents) ? detail.documents : [],
+        canDecide: detail.canDecide === true,
+        canSuspend: detail.canSuspend === true,
+      })
+    } catch (err) {
+      // The panel stays open with the applicant named, so the reviewer can retry
+      // or go back, and the message says what failed rather than that something
+      // did.
+      setScholarDetail({ uid, application: {}, documents: [], canDecide: false, canSuspend: false })
+      setScholarDetailError(err.message || 'This application could not be opened')
+    } finally {
+      setScholarDetailLoading(false)
+    }
+  }
+
+  const closeScholarDetails = () => {
+    setScholarDetail(null)
+    setScholarDetailError('')
+    setScholarDocError('')
+    setScholarDocLink(null)
+    setScholarNote('')
+  }
+
+  // Escape closes the panel. It only calls setters, so the stale-closure risk an
+  // exhaustive-deps rule would flag here does not exist.
+  useEffect(() => {
+    if (!scholarDetail) return
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeScholarDetails()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scholarDetail])
+
+  /**
+   * Asks the backend for a link and opens it.
+   *
+   * The backend has already checked the reviewer's role and that the object
+   * belongs to this applicant, so all that is left here is to hand the URL to the
+   * browser. The link is short-lived and scoped to one object, and nothing about
+   * it is kept: if the tab is blocked the reviewer gets a link to click instead,
+   * which stops working on its own.
+   */
+  const viewScholarDocument = async (uid, documentId) => {
+    setScholarDocBusy(documentId)
+    setScholarDocError('')
+    setScholarDocLink(null)
+    try {
+      const signed = await fetchScholarDocumentUrl(uid, documentId)
+      const opened = window.open(signed.url, '_blank', 'noopener,noreferrer')
+      if (!opened) {
+        setScholarDocLink({
+          url: signed.url,
+          fileName: signed.fileName,
+          expiresAt: signed.expiresAt,
+        })
+      }
+    } catch (err) {
+      setScholarDocError(err.message || 'This document could not be opened')
+    } finally {
+      setScholarDocBusy('')
     }
   }
 
@@ -777,6 +943,181 @@ const renderScholarVerification = () => {
     const maySuspend = scholarRole?.isAdmin === true
     const pending = rows.filter((application) => application.status === 'pending')
 
+    // One application, in full.
+    //
+    // Opened from a queue row, and the decision buttons live in here as well as
+    // in the queue: a reviewer reads every field and opens the submitted
+    // documents here, so deciding from the same place means the decision is
+    // never made against a row they have not opened.
+    const renderScholarDetailPanel = () => {
+      const uid = scholarDetail.uid
+      const application = scholarDetail.application || {}
+      const documents = scholarDetail.documents || []
+      const status = application.status || 'pending'
+      const busy = scholarBusy === uid
+      return (
+        <div className="modal-backdrop" role="presentation" onClick={closeScholarDetails}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={'Scholar application ' + uid}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-head">
+              <div>
+                <p className="eyebrow">APPLICATION REVIEW</p>
+                <h2>{application.fullName || 'Applicant'}</h2>
+                <p className="muted">
+                  {application.username ? '@' + application.username : NOT_PROVIDED} · {uid}
+                </p>
+              </div>
+              <div className="modal-head-actions">
+                <span className={'pill pill-' + status}>{STATUS_LABELS[status] || status}</span>
+                <button className="btn" onClick={closeScholarDetails} disabled={busy}>
+                  Close
+                </button>
+              </div>
+            </header>
+
+            {scholarDetailError && (
+              <div className="alert error">
+                {scholarDetailError}{' '}
+                <button className="link" onClick={() => openScholarDetails(uid)}>Retry</button>
+              </div>
+            )}
+
+            {scholarDetailLoading ? (
+              <div className="empty-state">
+                <strong>Loading application…</strong>
+                <span>Reading the stored application for {uid}.</span>
+              </div>
+            ) : (
+              <div className="modal-body">
+                <DetailSection title="Applicant information">
+                  <DetailField label="Full name" value={application.fullName} />
+                  <DetailField label="Username" value={application.username} />
+                  <DetailField label="User ID" value={uid} />
+                  <DetailField label="Email" value={application.email} />
+                  <DetailField label="Phone" value={application.phone} />
+                  <DetailField label="Country" value={application.country} />
+                  <DetailField label="Region" value={application.region} />
+                  <DetailField label="City" value={application.city} />
+                </DetailSection>
+
+                <DetailSection title="Submitted verification information">
+                  <DetailField label="Scholar type" value={application.scholarType} />
+                  <DetailField label="Expertise" value={application.expertise} />
+                  <DetailField label="Introduction" value={application.introduction} />
+                  <DetailField
+                    label="Submitted at"
+                    value={formatTimestamp(application.submittedAt)}
+                  />
+                </DetailSection>
+
+                <DetailSection title="Qualification information">
+                  <DetailField label="Institution" value={application.institution} />
+                  <DetailField label="Qualification" value={application.qualification} />
+                  <DetailField label="Specialization" value={application.specialization} />
+                  <DetailField label="Years of education" value={application.educationYears} />
+                  <DetailField label="Years of experience" value={application.experienceYears} />
+                </DetailSection>
+
+                <DetailSection title="Submitted documents">
+                  {scholarDocError && <div className="alert error">{scholarDocError}</div>}
+                  {scholarDocLink && (
+                    <div className="alert">
+                      Your browser blocked the new tab.{' '}
+                      <a href={scholarDocLink.url} target="_blank" rel="noopener noreferrer">
+                        Open {scholarDocLink.fileName || 'the document'}
+                      </a>{' '}
+                      — the link is short-lived and stops working on its own.
+                    </div>
+                  )}
+                  {documents.length === 0 ? (
+                    <p className="muted">
+                      No document slots are recorded for this application.
+                    </p>
+                  ) : (
+                    documents.map((document) => (
+                      <div className="document-row" key={document.id}>
+                        <div>
+                          <strong>{document.label}</strong>
+                          <span className="sub">
+                            {document.fileName ||
+                              DOCUMENT_STATE_TEXT[document.state] ||
+                              document.state}
+                          </span>
+                        </div>
+                        {document.viewable ? (
+                          <button
+                            className="btn"
+                            disabled={scholarDocBusy === document.id}
+                            onClick={() => viewScholarDocument(uid, document.id)}
+                          >
+                            {scholarDocBusy === document.id ? 'Opening…' : 'View'}
+                          </button>
+                        ) : (
+                          <span className="muted">
+                            {document.state === 'missing' ? NOT_PROVIDED : 'No file'}
+                          </span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </DetailSection>
+
+                <DetailSection title="Decision so far">
+                  <DetailField
+                    label="Current status"
+                    value={STATUS_LABELS[status] || status}
+                  />
+                  <DetailField label="Reviewed by" value={application.reviewedBy} />
+                  <DetailField
+                    label="Reviewed at"
+                    value={formatTimestamp(application.reviewedAt)}
+                  />
+                  <DetailField label="Review note" value={application.reviewNote} />
+                </DetailSection>
+
+                {scholarDetail.canDecide && (
+                  <section className="detail-section">
+                    <h3>Your review</h3>
+                    <label className="note-field">
+                      Review note (optional, recorded with the decision)
+                      <textarea
+                        value={scholarNote}
+                        maxLength={500}
+                        placeholder="What did you check? What should the applicant know?"
+                        onChange={(e) => setScholarNote(e.target.value)}
+                      />
+                    </label>
+                    <div className="modal-actions">
+                      <button
+                        className="btn primary"
+                        disabled={busy}
+                        onClick={() => decideScholar(uid, 'approved', scholarNote)}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="btn danger"
+                        disabled={busy}
+                        onClick={() => decideScholar(uid, 'rejected', scholarNote)}
+                      >
+                        Reject
+                      </button>
+                      <span className="muted">{scholarNote.trim().length}/500</span>
+                    </div>
+                  </section>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )
+    }
+
     return (
       <section className="content">
         <div className="page-card">
@@ -876,6 +1217,12 @@ const renderScholarVerification = () => {
                         </span>
                       </td>
                       <td className="actions">
+                        <button
+                          className="btn"
+                          onClick={() => openScholarDetails(application.uid)}
+                        >
+                          View
+                        </button>
                         {application.status === 'pending' ? (
                           <>
                             <button
@@ -919,12 +1266,15 @@ const renderScholarVerification = () => {
             <strong>Verification workflow</strong>
             <p>Application → Document Review → Decision → Verified / Rejected / Suspended</p>
             <p>
-              {pending.length} pending in view. Applicant email, phone and uploaded document
-              locations are deliberately not returned to this panel; open the application from
-              the app to read them.
+              {pending.length} pending in view. This queue shows only what identifies an
+              application; the applicant’s email, phone number and submitted documents are
+              returned by the per-application details route, which is authorized on its own.
+              Open an application to read it in full before deciding.
             </p>
           </div>
         </div>
+
+        {scholarDetail && renderScholarDetailPanel()}
       </section>
     )
   }

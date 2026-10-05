@@ -149,4 +149,26 @@ button{cursor:pointer}
 .pill-approved{background:#e9f8ef;color:#116b3a;border-color:#c3ecd3}
 .pill-rejected{background:#fdeeed;color:#a1201a;border-color:#f6cfcd}
 .pill-suspended{background:#f2f4f7;color:#4a5568;border-color:#dfe3ea}
-.pill-unknown{background:#f2f4f7;color:#6b7280;border-color:#e2e6ec}
+.modal-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:100;padding:24px}
+.modal{background:#fff;border-radius:16px;box-shadow:0 20px 25px -5px rgba(0,0,0,.1),0 8px 10px -6px rgba(0,0,0,.1);width:100%;max-width:760px;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;border:1px solid #e2e8f0}
+.modal-head{display:flex;justify-content:space-between;align-items:flex-start;padding:20px 24px;border-bottom:1px solid #edf2f7;background:#fafbfc}
+.modal-head h2{margin:3px 0 2px;font-size:18px;color:#1a202c}
+.modal-head-actions{display:flex;align-items:center;gap:12px}
+.modal-body{padding:24px;overflow-y:auto;flex:1}
+.detail-section{margin-bottom:24px}
+.detail-section:last-child{margin-bottom:0}
+.detail-section h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#4a5568}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.detail-field{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px}
+.detail-label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;color:#718096;margin-bottom:3px;letter-spacing:.5px}
+.detail-value{display:block;font-size:13px;color:#2d3748;word-break:break-word}
+.detail-empty{color:#a0aec0;font-style:italic}
+.document-row{display:flex;justify-content:space-between;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 16px;margin-bottom:8px}
+.document-row:last-child{margin-bottom:0}
+.document-row strong{display:block;font-size:13px;color:#2d3748}
+.document-row .sub{display:block;font-size:11px;color:#718096;margin-top:2px}
+.note-field{display:block;font-size:11px;font-weight:700;color:#4a5568;margin-bottom:12px}
+.note-field textarea{width:100%;margin-top:6px;padding:10px 12px;border:1px solid #cbd5e0;border-radius:8px;font:inherit;font-size:12px;color:#2d3748;resize:vertical;min-height:72px}
+.note-field textarea:focus{outline:0;border-color:#3182ce;box-shadow:0 0 0 3px rgba(49,130,206,.15)}
+.modal-actions{display:flex;gap:10px;align-items:center;margin-top:12px}
+
