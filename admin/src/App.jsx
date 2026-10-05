@@ -1132,7 +1132,6 @@ const renderScholarVerification = () => {
             </div>
           </div>
           <div className="topbar-right">
-            <span className="connection-dot">Backend offline</span>
           </div>
         </header>
 
