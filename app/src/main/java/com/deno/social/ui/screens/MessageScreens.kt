@@ -73,6 +73,7 @@ import com.deno.social.data.model.ScholarApplication
 import com.deno.social.data.model.VerificationStatus
 import com.deno.social.data.repository.MockMessagingRepository
 import com.deno.social.data.repository.SessionManager
+import com.deno.social.data.repository.MediaUploader
 import com.deno.social.ui.components.Avatar
 import com.deno.social.ui.components.DenoButton
 import com.deno.social.ui.components.DenoTextField
@@ -1509,20 +1510,44 @@ private fun VerificationForm() {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            certificateUri = uri.toString()
-            certificateName = displayNameFromUri(context, uri)
-                ?: "Certificate"
-            clearError()
+            val name = displayNameFromUri(context, uri) ?: "Certificate"
+            certificateName = name
+            // Upload the document to B2 and store the server-side object key
+            submitScope.launch {
+                try {
+                    val bytes = MediaUploader.readVerificationDocumentBytes(context, uri)
+                    val contentType = MediaUploader.getDocumentContentType(context, uri)
+                    val stored = MediaUploader.uploadVerificationDocument(bytes, contentType, "certificate")
+                    certificateUri = stored.path
+                    certificateName = name
+                    clearError()
+                } catch (e: Exception) {
+                    error = "Could not upload certificate: ${e.message}"
+                    Log.e("ScholarVerification", "Certificate upload failed", e)
+                }
+            }
         }
     }
     val supportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            supportingUri = uri.toString()
-            supportingName = displayNameFromUri(context, uri)
-                ?: "Supporting Document"
-            clearError()
+            val name = displayNameFromUri(context, uri) ?: "Supporting Document"
+            supportingName = name
+            // Upload the document to B2 and store the server-side object key
+            submitScope.launch {
+                try {
+                    val bytes = MediaUploader.readVerificationDocumentBytes(context, uri)
+                    val contentType = MediaUploader.getDocumentContentType(context, uri)
+                    val stored = MediaUploader.uploadVerificationDocument(bytes, contentType, "supporting")
+                    supportingUri = stored.path
+                    supportingName = name
+                    clearError()
+                } catch (e: Exception) {
+                    error = "Could not upload supporting document: ${e.message}"
+                    Log.e("ScholarVerification", "Supporting document upload failed", e)
+                }
+            }
         }
     }
 

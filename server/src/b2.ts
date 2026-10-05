@@ -21,7 +21,15 @@ export class MediaError extends Error {
  * are declared here so the shape is stable, but the intent is that Phase 1 only
  * uses "avatar" and "cover".
  */
-export const MEDIA_KINDS = ["avatar", "cover", "post", "reel", "story"] as const;
+export const MEDIA_KINDS = [
+  "avatar",
+  "cover",
+  "post",
+  "reel",
+  "story",
+  "certificate",
+  "supporting",
+] as const;
 export type MediaKind = typeof MEDIA_KINDS[number];
 
 /**
